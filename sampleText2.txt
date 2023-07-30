@@ -1,0 +1,2353 @@
+# ffffffffffffffffffffffffffffffffffffffff
+# synthMD.py
+# ffffffffffffffffffffffffffffffffffffffff
+
+##=======================================================================================
+#                 Create Synthetic data set
+#  Read the input statistics and generate rare disease synthetic data
+##=======================================================================================
+      
+# if this script called directly,
+if __name__ == "__main__":
+   print("-------------------  SynthMD")
+
+# ffffffffffffffffffffffffffffffffffffffff
+# MDutils.py
+# ffffffffffffffffffffffffffffffffffffffff
+
+import os, sys, csv, random, datetime, json
+from us import states
+from scipy import special
+import numpy as np
+from faker import Faker
+fake = Faker()
+
+#--------------- Read Input Files-----------
+def readInputFiles(cfgPath):
+      """
+      Read configuration, rare disease and USA statistics from files:
+      cfgPath: path to the configuration file
+      rdsPath: path to the RDs data file
+      """
+      # Read configuration and rare disease data from files:
+      cfg               = json.load(open(cfgPath))
+ 
+      rdsPath = os.path.join(*list(cfg["paths"]["rdsPath"]))
+      usaRaceDataPath = os.path.join(*list(cfg["paths"]["usaRaceDataPath"]))
+      usaAgeSexDataFilesPath= os.path.join(*list(cfg["paths"]["usaAgeSexDataFilePath"]))
+      resultsFolderPath= os.path.join(*list(cfg["paths"]["resultsFolderPath"]))
+      age_sex_catigories = list(cfg["age_sex_catigories"])
+
+      usaAgeSexDataFilesPath = [usaAgeSexDataFilesPath+x for x in age_sex_catigories]
+      
+      RDsData           = json.load(open(rdsPath))
+      RDsData           = RDsData["RDs"]
+       
+      # USA states populations per race
+      # 51 x 6
+      # ID	State	African-American	European-American	Others	Total
+      raceData = [row for row in csv.reader(open(usaRaceDataPath), delimiter=",", quotechar='"')]
+      raceData = [  [int(x[0]), x[1], int(x[2]),int(x[3]),int(x[4]),int(x[5]) ] for x in raceData[1:]]
+   
+      # reade the prepared data: 
+      usaAgeSexData = [ [ [int(x[0]), x[1]] +[int(y) for y in x[2:] ] for x in [row for row in csv.reader(open(fnm+"_ext.csv"), delimiter=",", quotechar='"')]] for fnm in usaAgeSexDataFilesPath]
+      usaAgeSexGroupData = [ [ [int(x[0]), x[1]] +[int(y) for y in x[2:] ] for x in [row for row in csv.reader(open(fnm+"_grp.csv"), delimiter=",", quotechar='"')]] for fnm in usaAgeSexDataFilesPath]
+      
+      # USA states populations per sex and age
+      # 51 x 96
+      # ID	State	Age_0,...,Age_maxAge
+      usaAgeSexMaleData   = [x[2:] for x in usaAgeSexData[0]]
+      usaAgeSexFemaleData = [x[2:] for x in usaAgeSexData[1]]
+      usaAgeSexBothData   = [x[2:] for x in usaAgeSexData[2]]
+      usaAgeSexData = [usaAgeSexMaleData, usaAgeSexFemaleData, usaAgeSexBothData]
+
+      # 51 x 7
+      # ID	State	AgeGroup_0,...,AgeGroup_6
+      usaStatesAgeSexGroupMale     =  [x[2:] for x in usaAgeSexGroupData[0]]
+      usaStatesAgeSexGroupFemale   =  [x[2:] for x in usaAgeSexGroupData[1]]
+      usaStatesAgeSexGroupBoth     =  [x[2:] for x in usaAgeSexGroupData[2]]
+      usaAgeSexGroupData = [usaStatesAgeSexGroupMale, usaStatesAgeSexGroupFemale, usaStatesAgeSexGroupBoth]
+
+      return cfg, RDsData, raceData, usaAgeSexData, usaAgeSexGroupData, [usaAgeSexDataFilesPath, resultsFolderPath]
+
+def getRaceData(raceData, RDsData): 
+   
+   # raceData: ID	State	African-American	European-American	Others	Total
+   # African-American (AA), European-American (EA), and others (OA) populations of each state
+   total_AA_Population = sum([x[2] for x in raceData])
+   total_EA_Population = sum([x[3] for x in raceData])
+   total_OA_Population = sum([x[4] for x in raceData])
+
+   racePopulations =[total_AA_Population, total_EA_Population, total_OA_Population]
+
+   # total race for each state 
+   # raceData: ID	State	African-American	European-American	Others	Total
+
+   AA_PopulationsSt  = [x[2] for x in raceData]         
+   EA_PopulationsSt  = [x[3] for x in raceData]  
+   OA_PopulationsSt  = [x[4] for x in raceData] 
+   racePopulationsSt = [[x,y,z] for x,y,z in zip(AA_PopulationsSt, EA_PopulationsSt, OA_PopulationsSt)]
+
+
+   total_USA_Population_From_Race  = sum([sum(x) for x in racePopulationsSt]) 
+
+   # How many patients per race AA,EA,OA
+   # Notes: SCD affect AA moastly
+   #        CF  affects EA moastly
+   raceWeights = [list(rd['race_percentage']['races'].values()) for rd in RDsData]
+                     
+   actual_number_of_patients =  [int(rd['number_of_patients']['nump_value']) for rd in RDsData]
+
+   # RD: prevalence
+   # SCD value is conflicting with total number of patients 
+   # Total number of patients should be around:
+   # 100000, 32100, 55241
+   prevalenceLst = [float(rd['prevalence']['pr_value']) for rd in RDsData]
+   # fix missing values, sometimes prevalence or number of patients are missing
+   prevalenceLst = [ actual_number_of_patients[i]/total_USA_Population_From_Race if x==0 else x for i,x in enumerate(prevalenceLst)]
+   prevalenceRaceLst = [ [(prevalence * total_USA_Population_From_Race * rw / 100) / rp for rw,rp  in zip(raceWeight, racePopulations)] 
+                                                                              for  raceWeight, prevalence in zip(raceWeights, prevalenceLst)]
+  
+   return raceWeights, total_USA_Population_From_Race, prevalenceRaceLst, racePopulations, racePopulationsSt
+    
+#--------------------------Functions for generating data--------------------------
+# get death rate based on age, race, sex statitics 
+def getStatesDeathRateDists(s, rdDeathRates, numberOfPatientsForAgeGroups):
+     
+      # Find dead patients based on age 
+      statePatientsDead    = [  round((x/100.0) * y) for x,y in zip(rdDeathRates, numberOfPatientsForAgeGroups) ]
+      statePatientsAlive   = [      x - y    for x,y in zip(numberOfPatientsForAgeGroups, statePatientsDead)]
+
+      # generate alive/dead distribution for all age groups of the current state
+      deathRateAgeDists  = [ [False]*x + [True]*y for x,y in  zip(statePatientsDead, statePatientsAlive)]
+
+      return  deathRateAgeDists
+
+
+def getRandomTime(inputDate):
+
+    # add random time hours minutes seconds
+    randomHours   = random.randint(0,24)    
+    randomMinutes = random.randint(0,60)
+    randomSeconds = random.randint(0,60)
+
+    randomHours   = str(randomHours)   if randomHours>9   else "0" + str(randomHours)
+    randomMinutes = str(randomMinutes) if randomMinutes>9   else "0" + str(randomMinutes)
+    randomSeconds = str(randomSeconds) if randomSeconds>9 else "0" + str(randomSeconds)
+
+    randomTime = " " + randomHours + ":" + randomMinutes + ":"+ randomSeconds
+    outDateTime = str(inputDate) + randomTime
+    return outDateTime
+
+#------------------- Create death date  --------------------
+# Create a random death date based on the patient age and probablity of death
+# The patient will be died at the input age. The patient born after 1.1.1900
+# def getDeathDate(inputAge, ageDeathRate, birthDate, diagDate, ageDiagFactor):
+def getDeathDate(inputAge, birthDate, diagDate, ageDiagFactor, addTimeToDates):
+        deathDateS = None
+       
+        # update the birthdate and the diagnostic date relativly to the death date
+        # the age now means the age when the patient died
+
+        startDate = datetime.date(1920,1,1)
+        endDate   = datetime.date(2023-inputAge,1,1) 
+
+        birthDate = fake.date_time_between(start_date=startDate, end_date=endDate)
+
+        diagDate  = str(birthDate.date() + datetime.timedelta(days=ageDiagFactor))
+
+        deathDate = str(birthDate.date() + datetime.timedelta(days=inputAge * 365))
+
+        # remove the time from the date
+        birthDate = str(birthDate)[:10]
+        
+        if addTimeToDates:            
+            birthDate = getRandomTime(birthDate)
+            diagDate  = getRandomTime(diagDate)
+            deathDate = getRandomTime(deathDate)
+        return birthDate, diagDate, deathDate
+
+
+
+#------------------- Create a distribution to sample from  --------------------
+def getGroupDistriution(labelLst, countLst):       
+    # check if we have large numbers, reduce them
+    countLst = [round(x) for x in countLst]
+    if countLst[0]>1000:
+       countLst = [int(x/1000) for x in countLst]  
+
+    dist = [[x]*y for x,y in zip(labelLst, countLst)]
+    # Flatten list
+    dist   = [item for sublist in dist for item in sublist]
+        # shuffle
+    random.shuffle(dist)
+    return dist
+
+# #-------------------- create age distribution ----------------------  
+def  getAgeDistribution(stData, numPST, rdAgeGroupsLst, total_number_of_patients):
+     stateAgeDist = []
+     dataLabels=list(range(len(stData)))
+
+     # total population of this state  
+     stTotal = sum(stData)
+
+     # create age ratio for each age 
+     stateAgeRatio = [ round( stData[x] / stTotal ,5)              for x in range(len(stData)) ]    
+
+     # Number of patients per age for this state 
+     stateAgeRates  = [ round(     stateAgeRatio[x]  *  numPST   )  for x in range(len(dataLabels)) ]    
+
+     # repeat for each age  
+     for k in range(len(dataLabels)): 
+         ageDist = []
+         for r in range (stateAgeRates[k]):
+             ageDist.append(k)
+         stateAgeDist.append(ageDist)    
+     
+     # Collect age distribution into age groups     
+     finalStateAgeDist = []    
+     for g, ag in enumerate(rdAgeGroupsLst):         
+         minAge,maxAge = getAgeRangeFromAgeGroup(g, dataLabels[-1])  
+         stateAgeGroupDist = [stateAgeDist[k] for k in range(len(stateAgeDist)) if minAge<=k and k<maxAge]
+         #flatten
+         stateAgeGroupDist = [item for sublet in stateAgeGroupDist for item in sublet]
+         finalStateAgeDist.append(stateAgeGroupDist)
+      
+     return finalStateAgeDist
+
+#------------------- Sample from a normal distribution   --------------------
+# based on minimum, maximum values. mean = (min + max)/2, std = mean/2
+# Ref: https://stackoverflow.com/questions/62364477/python-random-number-generator-within-a-normal-distribution-with-min-and-max-val
+#      https://www.thoughtco.com/range-rule-for-standard-deviation-3126231
+def sampleFromNormalDistribution(minVal, maxVal, sampleSize=10000):   
+    # TODO BUG: if the range is large samples ma not look like normally distributed
+    mean = (minVal + maxVal) / 2.0
+    std  = (maxVal - minVal) / 4.0  
+    random_uniform_data = np.random.uniform(special.erf( (minVal - mean) / std), 
+                                            special.erf( (maxVal - mean) / std), 
+                                            sampleSize)
+    random_gaussianized_data = (special.erfinv(random_uniform_data) * std) + mean
+    return random_gaussianized_data
+
+ #---------------  get state names  ---------------- 
+def getUSAstateNames(isDCIncluded=None):  
+    """
+      Return list of USA states IDs, long and short names
+
+      Args:
+         isDCIncluded (int): 1: to include or 0: to exclude Washington DC from the list
+
+      Returns:
+         List of lists: states IDS (int), states short names (str), state long names (str) 
+         debends on isDCIncluded, the returned size may be  3x51 or 3x52 
+    """       
+    isDCIncluded = 1 if isDCIncluded is None else isDCIncluded
+
+    usaFIPS    = [int(states.STATES[x].fips)   for x in range(len(states.STATES))]
+    usaLNames  = [states.STATES[x].name        for x in range(len(states.STATES))]
+    usaSNames  = [states.STATES[x].abbr        for x in range(len(states.STATES))]
+
+    if isDCIncluded:
+         # add Washington DC
+         usaFIPS.append(11)
+         usaFIPS = sorted(usaFIPS)
+         usaLNames.insert(usaFIPS.index(11),"District of Columbia") 
+         usaSNames.insert(usaFIPS.index(11),"DC") 
+
+         usaNames = [usaFIPS, usaSNames, usaLNames]
+
+         ## check if the list is sorted
+         ## print(all(usaFIPS[i] <= usaFIPS[i+1] for i in range(len(usaFIPS) - 1)))       
+    return usaNames
+
+#------------------- Get index of age group --------------------
+def getAgeGroupIndex(age):
+        if age < 5:
+           ageG = 0
+        elif   5 <= age and age <= 14:
+           ageG = 1
+        elif  15 <= age and age <= 19:
+           ageG = 2
+        elif  20 <= age and age <= 24:
+           ageG = 3
+        elif  25 <= age and age <= 39:
+           ageG = 4
+        elif  40 <= age and age <= 60:
+           ageG = 5
+        elif  60 < age:
+           ageG = 6
+        return ageG  
+
+#---------------  find range of each age group  ---------------- 
+def getAgeRangeFromAgeGroup(ageGroupIndex, maxAge):
+    ageStart = None; ageEnd= None
+    if   ageGroupIndex == 0:
+       ageStart = 0; ageEnd= 5
+    elif ageGroupIndex == 1:
+       ageStart = 5; ageEnd= 15
+    elif ageGroupIndex == 2:
+       ageStart = 15; ageEnd= 20
+    elif ageGroupIndex == 3:
+       ageStart = 20; ageEnd= 25
+    elif ageGroupIndex == 4:
+       ageStart = 25; ageEnd= 40
+    elif ageGroupIndex == 5:
+       ageStart = 40; ageEnd= 61
+    elif ageGroupIndex == 6:
+    #    print("maxAge : ",maxAge)
+       ageStart = 61; ageEnd= maxAge + 1
+    return   ageStart, ageEnd 
+
+#--------------------------------   readingCSVdata  ----------------
+# used in charting
+def readingCSVdata(csvFnm, maxUSAAge=None):
+    with open(csvFnm) as dataFile:
+        dataReader  = csv.reader(dataFile, delimiter=";", quotechar='"')
+        data        = [row for row in dataReader]
+        dataLabels  = data[0]
+        dataArray   = data[1:]
+        newDataArray = []
+        if (maxUSAAge is None) or (maxUSAAge == 0): 
+            maxUSAAge = np.max([int(x[1]) for x in dataArray])
+
+        dataArray = [[row[0]] + [ (x)    for x in row[1:] ]  for row in dataArray]
+
+        for row in dataArray:
+            for i,col in enumerate(row): 
+                if i in [0,1]:
+                    row[i] = int(col) 
+                elif  i in [9,10]:
+                    row[i] = float(col) 
+                elif  i in [6,7,8]: # Dates to years                      
+                    row[i] = int(col[:4]) if not col=="" else 0
+            newDataArray.append(row)        
+        newDataArray = dataArray if newDataArray ==[] else newDataArray
+       
+    return maxUSAAge, dataLabels, newDataArray
+
+def RDGetFiles(directory, string):
+    # Traverse the directory structure
+    filesLst = []
+    for root, dirs, files in os.walk(directory):
+        for filename in files:
+            # Check if the desired string is in the filename
+            if string in filename:
+                filesLst.append(os.path.join(root, filename)) 
+                
+    return filesLst 
+
+# if this script called directly
+if __name__ == "__main__":
+    # testing 
+    if len(sys.argv) > 1:
+       print("input: ", sys.argv)
+   
+
+# ffffffffffffffffffffffffffffffffffffffff
+# MDprepare.py
+# ffffffffffffffffffffffffffffffffffffffff
+
+##=============================================================
+# The script: 
+#    - reads the output files from import
+#    - convert them to usable csv and data lists 
+#    - generates input data charts
+##=====================================================
+
+import csv, json, sys, os, time
+import numpy as np
+from scipy.optimize import minimize
+
+from synthMD import MDutils, MDcharts
+
+
+def getRaceData(cfg, raceDataFilePath):
+    
+    print("Reading race data: ", raceDataFilePath)
+        
+    #-------- race data for each state 
+    raceData     = [row for row in csv.reader(open(raceDataFilePath), delimiter=",", quotechar='"')]
+    raceData[1:] = [ [s.strip("[]'") for s in x[0].split(', ')] for x in raceData[1:]]
+    
+    # get race names   
+    rdsPath = cfg["paths"]["rdsPath"] 
+    rdsPath = os.path.join(*rdsPath)
+    RDsData      = json.load(open(rdsPath))["RDs"]
+    raceNamesLst = [x.split(",")[0] for x in list(RDsData[0]["race_percentage"]["races"].keys())]
+    
+    # restructure labels and data 
+    raceData[0]  = [ raceData[0][4], raceData[0][0], raceNamesLst[0], raceNamesLst[1],raceNamesLst[2], raceData[0][1] ]
+    raceData[1:] = [ [int(x[4]), x[0], int(x[3]), int(x[2]), int(x[1])- int(x[2])-int(x[3]) ,int(x[1])] for x in raceData[1:]]
+
+    # save to csv file
+    csv.writer(open(raceDataFilePath[:-4]+"_ext.csv", 'w', newline='')).writerows(raceData)
+            
+    return raceData 
+
+#-------------------------------- Extract Age Sex Data from usaAgeSexDataFolderPath into 4 files
+#  usaAgeSexDataFilePath: all useful extratced data 
+#  usaAgeSexMaleDataFilePath, usaAgeSexFemaleDataFilePath, usaAgeSexTotalDataFilePath: data of male, female and both
+def getAgeSexData(usaAgeSexDataFolderPath, usaAgeSexDataFilePath, usaAgeSexMaleDataFilePath, usaAgeSexFemaleDataFilePath, usaAgeSexTotalDataFilePath):
+    
+    ageSexData=[]
+    if not os.path.exists(usaAgeSexDataFilePath):
+       print("Reading age sex data files from: ", usaAgeSexDataFolderPath)
+       fnms  = os.listdir(usaAgeSexDataFolderPath)
+       fnms  = sorted([x for x in fnms if ".csv" in x ])
+            
+       # read each file
+       for fnm in fnms:            
+            print("reading : ", fnm)
+            
+            #TODO: add columns config to config.json
+            # get state and id from filename
+            id    = int(fnm[-9:-7])
+            state = fnm[-6:-4]
+            
+            # read the file into list
+            dataReader = csv.reader(open(os.path.join(usaAgeSexDataFolderPath,fnm)), delimiter=",", quotechar='"')
+            fileData   = [row for row in dataReader]
+            
+            # restructure and convert to numbers
+            dataArray    = [[x[0], x[2], x[3], x[1]] for x in fileData[6:92]] 
+            dataArray    = [[ i, x[1], x[2], x[3]]  for i, x in enumerate(dataArray)] 
+            dataArray.insert(0,[id,state])
+            # flatten to 345 elements
+            dataArray = [item for sublist in dataArray for item in sublist]
+
+            # add to list of all states                
+            ageSexData.append(dataArray)
+       
+       # restructure
+       #ageSexData: 51 x id, state,    age, male, female, total,...,age, male female total
+       labels = ["id", "state"]
+       labels.extend(["age","male","female","total"]* 86)
+
+       allData = []
+       allData.append(labels)
+       for x in ageSexData:
+           allData.append(x)
+
+       numStates = len(ageSexData)
+    
+       #           for each ages, we have 4 fields age, m,f,t  
+       numAges   = int((len(ageSexData[0])-2)/4)
+
+       # male population for each age for each state
+       ageStateMaleLst    =[]
+    
+       # female population for each age for each state       
+       ageStateFemaleLst  =[]
+    
+       # population for each age for each state       
+       ageStateTotalLst  =[]
+               
+       # create 3 large tables 51 rows x 2+86 columns
+       # id state age_0-age_85 
+       # for each state
+       for i in range(numStates):
+           # for each state, get Male, Female, and Total population of current age
+           # add id and state to each row
+           rowM=[int(ageSexData[i][0]), ageSexData[i][1]]
+           rowF=[int(ageSexData[i][0]), ageSexData[i][1]]
+           rowT=[int(ageSexData[i][0]), ageSexData[i][1]]
+           # for each age
+           for j in range(numAges):     
+               # add population of each age 
+               idx = (3*j + 3 + j)-1               
+               rowM.append(int(ageSexData[i][idx+1]))
+               rowF.append(int(ageSexData[i][idx+2]))
+               rowT.append(int(ageSexData[i][idx+3]))
+           ageStateMaleLst.append(rowM)   
+           ageStateFemaleLst.append(rowF)   
+           ageStateTotalLst.append(rowT)   
+       labels = ["id","state"]
+       labels.extend(["age_"+str(x) for x in range(numAges)])
+       ageStateMaleLst.insert(0,labels)
+       ageStateFemaleLst.insert(0,labels)
+       ageStateTotalLst.insert(0,labels)
+
+       # create csv files from the lists
+       data2Save = [allData, ageStateMaleLst, ageStateFemaleLst, ageStateTotalLst] 
+       fnms      = [usaAgeSexDataFilePath, usaAgeSexMaleDataFilePath, usaAgeSexFemaleDataFilePath, usaAgeSexTotalDataFilePath]
+       for fnm, fData in zip(fnms, data2Save):
+            csv.writer(open(fnm,       'w', newline='')).writerows(fData)
+              
+    else:
+       print("getAgeSexData(): files are already exist : ", usaAgeSexDataFilePath)  
+
+       data2Read = [] 
+       fnms      = [usaAgeSexMaleDataFilePath, usaAgeSexFemaleDataFilePath, usaAgeSexTotalDataFilePath]
+       for fnm in fnms:
+            # read csv files into lists
+            fData   = [row for row in csv.reader(open(fnm), delimiter=",", quotechar='"')]
+            # convert to integers
+            fData[1:]   = [ [int(x)  if i>1 else x for i, x in enumerate(y) ] for y in fData[1:]]
+            data2Read.append(fData)
+
+       ageStateMaleLst, ageStateFemaleLst, ageStateTotalLst = data2Read 
+    
+    ageSexData = [ageStateMaleLst,ageStateFemaleLst,ageStateTotalLst]
+    return ageSexData 
+
+# Get initial list as linear distribution
+def getLinearValue(x,x1,y1,x2,y2):
+    # create linear distribution  y = m*x + b    
+    m = (y2-y1)/(x2-x1)
+    y = m*(x-x1) + y1
+    return int(y)
+
+# Reduce the error using optimisation
+def minimizeError(estimated_population, estimation_sum):
+    
+    def func(x):
+      return abs(np.sum(x) - estimation_sum)
+
+    # Initialize the list
+    x0 = estimated_population
+
+    # Define the constraints
+    constraints = [
+        {'type': 'ineq', 'fun': lambda x: estimation_sum - np.sum(x)},
+        {'type': 'ineq', 'fun': lambda x: x-5}, # values must be >=5
+    ]
+    # Minimize the absolute difference
+    result = minimize(func, x0, constraints=constraints, method='SLSQP')
+    return [int(z) for z in  result.x]
+
+# Create a new estimated list for missing ages
+# we distributed the last age value on the missing ages
+def getEstimatedList(ages_population, maxInputAge=None, maxEstimatedAge=None, maxError=None):
+    maxInputAge     = 84 if maxInputAge is None else maxInputAge
+    maxEstimatedAge = 96 if maxEstimatedAge is None else maxEstimatedAge -1
+    maxError        = 100 if maxError is None else maxError
+
+    estimation_sum     = ages_population[-1]
+    startElement       = ages_population[-2]
+
+    endElement = 1 
+
+    estimated_population = [ getLinearValue(x,maxInputAge,startElement,maxEstimatedAge,endElement) for x in range(maxInputAge,maxEstimatedAge+1)]
+
+    estimated_population = minimizeError(estimated_population, estimation_sum)
+
+    final_error = abs(estimation_sum-sum(estimated_population))
+     
+    # check for negative values 
+    hasNegative = any(x < 0 for x in estimated_population) 
+    if hasNegative:
+       print("Error: Negative values")
+       for i,x in enumerate(estimated_population):
+           print(i+85,x)
+       sys.exit()  
+
+    # check if we havee large error
+    largeError = final_error>maxError
+    if largeError:
+       print("Error: Large error")
+       for i,x in enumerate(estimated_population):
+           print(i+85,x)
+       print("final_error : ",final_error)    
+       sys.exit()  
+       
+    return estimated_population
+
+
+def getFixAgeSexData(ageSexData=None, maxAge=None, fnmPath=None, usaAgeSexDataFilesPath=None, catlabels=None):
+    
+    # first check if the files exist
+    fixedFilePaths =  [x[:-4]+"_ext.csv" for x in usaAgeSexDataFilesPath]
+    
+    ## This is computed only when the files are created
+    optimizationError=[]
+
+    if not all([os.path.exists(x) for x in fixedFilePaths]):
+        
+        maxAge = 95 if maxAge is None else maxAge
+        
+        # fix the ageSexData
+        fixedAgeSexData = [[ statePop[:-1] + 
+                            sorted(getEstimatedList(statePop[2:], maxInputAge=len(statePop)-3, maxEstimatedAge=maxAge + 1, maxError=100),reverse=True) 
+                            for statePop in cat[1:]] for i, cat in enumerate(ageSexData)]
+
+        # save the result to csv files
+        for c in range(3):
+            csv.writer(open(fixedFilePaths[c],   'w', newline='')).writerows(fixedAgeSexData[c])
+    
+            ## plot the result and save the charts
+            Y0 = [ sum([ x[i+2] for x in ageSexData[c][1:] ])  for i in range(86)]
+            Y1 = [ sum([ x[i+2] for x in fixedAgeSexData[c]])  for i in range(maxAge+1)]
+            errCount      = Y0[-1]-sum(Y1[85:])
+            errPercentage =format(errCount/sum(Y0)*100, ".10f")
+            print("total "+catlabels[c]+" error: ",  errCount, errPercentage) 
+            optimizationError.append([errCount,errPercentage])
+            fnm1 = os.path.join("datasets","usa","chart_usa-2020-states-age-sex-"+catlabels[c]+".png")
+            fnm2 = os.path.join("datasets","usa","chart_usa-2020-states-age-sex-"+catlabels[c]+"_ext.png")
+            MDcharts.plotData(Y0, figTitle=catlabels[c]+" Age Before", XticksLabelsLst=None, isPercentageOutput=None, doShow=0, chartFnmPath=fnm1)
+            MDcharts.plotData(Y1, figTitle=catlabels[c]+" Age After, error count: "+str(errCount)+" error: "+errPercentage+"%", XticksLabelsLst=None, isPercentageOutput=None,  doShow=0, chartFnmPath=fnm2)
+        
+    else:
+        # read the file and return the data:
+        print("Fixed: usaAgeSexData files exist: ", fixedFilePaths[0])
+         
+        fixedAgeSexData= [[ [int(x[0]), x[1]] +[int(y) for y in x[2:] ] for x in 
+                              [row for row in 
+                                       csv.reader(open(fixedFilePaths[c]), delimiter=",", quotechar='"')]] 
+                                              for c in range(3)]
+    return fixedAgeSexData
+
+# Regroup into 7 groups
+# output should be 51 states x 7 age groups
+def getGroupedAgeSexData(ageSexData=None, rdsAgeGroups=None, maxAge=None, usaAgeSexDataFilesPath=None, catlabels=None):     
+
+    # first check if the files exist
+    groupedFilePaths =  [x[:-4]+"_grp.csv" for x in usaAgeSexDataFilesPath]
+
+    groupedAgeSexData =  []
+    if not all([os.path.exists(x) for x in groupedFilePaths]):
+       for c in range(3):  # for each catigory
+            cStates= []
+            for st in ageSexData[c]:  # for each state 
+                cStAge = st[2:]
+                cState = [st[0],st[1]]
+                for i,lbl in enumerate(rdsAgeGroups): # for each age group
+                    ageStart, ageEnd = MDutils.getAgeRangeFromAgeGroup(i, maxAge)
+                    # print("a,b    : ", ageStart,ageEnd)
+                    # find population of this age group
+                    sumAgeGroup = 0
+                    s = 0
+                    for a, age in enumerate(cStAge): 
+                        s += age
+                        if (ageStart<= a) and (a<ageEnd):
+                            # put in this age group
+                            sumAgeGroup += age
+                    cState = cState + [sumAgeGroup]
+                cStates.append(cState)        
+            groupedAgeSexData.append(cStates)
+                
+       ## save the result to csv files
+       statesIDs, statesSName, statesLName =  MDutils.getUSAstateNames()
+       for c in range(3):
+           csv.writer(open(groupedFilePaths[c], 'w', newline='')).writerows(groupedAgeSexData[c])
+          
+           # population of each state
+           Y = [ sum(groupedAgeSexData[c][s][2:]) for s in range(len(groupedAgeSexData[c])) ]
+           fnm = os.path.join("datasets","usa","chart_usa-2020-states-age-sex-"+catlabels[c]+"_state.png")
+           figTitle = catlabels[c]+" population per state"
+           MDcharts.plotData(Y, figTitle=figTitle, XticksLabelsLst=statesSName, isPercentageOutput=None, doShow=0, chartFnmPath=fnm)
+           print("------------------- Create Maps    -------------------------")        
+           # Initialize an empty dictionary to store the counts of persons per state
+           state_counts = {state: val for state, val in zip(statesLName,Y)}
+           #print(state_counts)
+           fnm = os.path.join("datasets","usa","chart_usa-2020-states-age-sex-"+catlabels[c]+"_state_map.png")
+           cfg = { "shapefile_path": "datasets/usa/map/cb_2018_us_state_20m.shp",
+                    "xylim": [-130, -60, 20, 55],
+                    "fontsize": 6,
+                    "figsize":(15,10),
+                    "cmap":"magma",
+                    "outputFnmPath": fnm,
+                    "doSave":1,
+                    "doShow":0,
+                    "mapTitle": figTitle,
+                    "mapName":"NAME",
+                    "dataName":"state"
+                }
+           MDcharts.plotMap(state_counts, cfg)
+
+           Y = [sum(groupedAgeSexData[c][s][g+2] for s in range(len(groupedAgeSexData[c]))) for g in range(len(groupedAgeSexData[c][0])-2)]
+           print("Total age Groups Populations "+catlabels[c],Y)
+           fnm = os.path.join("datasets","usa","chart_usa-2020-states-age-sex-"+catlabels[c]+"_grp.png")
+           MDcharts.plotData(Y, figTitle=catlabels[c]+" Age grouped", XticksLabelsLst=rdsAgeGroups, isPercentageOutput=None, doShow=0, chartFnmPath=fnm)
+    else:
+        print("Grouped: usaAgeSexData files exist: ", groupedFilePaths[0])
+        groupedAgeSexData = [ [ [int(x[0]), x[1]] +[int(y) for y in x[2:] ] for x in [row 
+                                     for row in csv.reader(open(groupedFilePaths[c]), delimiter=",", quotechar='"')]]
+                                                  for c in range(3)]
+    return groupedAgeSexData
+
+def getPreparedData(cfg, usaRaceDataPath, usaAgeSexDataFolderPath, usaAgeSexDataFilePath, usaAgeSexMaleDataFilePath, usaAgeSexFemaleDataFilePath, usaAgeSexTotalDataFilePath, catlabels):
+    
+    prepTimeStart = time.time()
+    maxAge          = cfg["maxAge"]["max-age-value"]
+
+    ## rdAgeGroupsLst  = [  "<5"   ,"5-14"  ,"15-19"  ,"20-24"  ,"25-39"  ,"40-60"  ,">60"]
+    rdAgeGroupsLst    = cfg["rdAgeGroupsLst"]
+    
+    ## get race data and use labels from config file
+    raceData        = getRaceData(cfg, usaRaceDataPath)
+
+    ## collect data from all files into one file 
+    ageSexData      = getAgeSexData(usaAgeSexDataFolderPath, usaAgeSexDataFilePath, usaAgeSexMaleDataFilePath, usaAgeSexFemaleDataFilePath, usaAgeSexTotalDataFilePath)
+
+    usaAgeSexDataFilesPath = [usaAgeSexMaleDataFilePath,usaAgeSexFemaleDataFilePath,usaAgeSexTotalDataFilePath]
+
+    ## add missing ages 85:maxAge 
+    fixedAgeSexData = getFixAgeSexData(ageSexData, maxAge=maxAge, usaAgeSexDataFilesPath=usaAgeSexDataFilesPath, catlabels=catlabels)
+
+    groupedAgeSexData = getGroupedAgeSexData(fixedAgeSexData,rdAgeGroupsLst, maxAge=maxAge, usaAgeSexDataFilesPath=usaAgeSexDataFilesPath, catlabels=catlabels)
+    
+    prepTimeEnd = time.time() - prepTimeStart
+    print("Prepared data took ", prepTimeEnd, " seconds") 
+
+# if this script called directly
+if __name__ == "__main__":
+    # testing 
+    if len(sys.argv) > 1:
+       print("input: ", sys.argv)
+
+# ffffffffffffffffffffffffffffffffffffffff
+# MDimport.py
+# ffffffffffffffffffffffffffffffffffffffff
+
+# #=============================================================
+# The script: 
+#    - imports USA states information using us lib
+#    - imports USA census race data using API and save to csv file
+#    - downloads USA census age and sex excel tables and convert them to csv
+#    - pip install census --proxy http://8.8.8.8/
+#
+# Requirements:
+#   - install us and census (note census lib is not used, it seems out of date)
+#       pip3 install census us
+#   - getting api key from here: https://api.census.gov/data/key_signup.html
+#       after that they key will be submitted to the email and needs activation
+# Important note: some census variables may need update, check the census website for details
+# #=============================================================
+
+
+import os, sys, csv, json, requests, urllib, time
+import pandas as pd
+
+from synthMD import MDutils
+
+## -------------------------  Get Race populations using USA census API
+def getUSACensusDataRace(censusAPIKey, censusQueryYear=None, censusXLSXYear=None, forceDownload=None,
+                         usaIDs=None,race_data_path=None, doSave=None, proxies=None):
+        
+        proxies= {} if proxies is None else proxies
+        usaIDs = [ "0" + str(id) if id <10 else str(id) for id in usaIDs]
+        
+        ## Get states race             
+        ## Total, white, black: Ref:  https://api.census.gov/data/2020/dec/pl/variables.html
+        censusVars      = "NAME,P1_001N,P1_003N,P1_004N"
+        dataset_acronym = "/dec/pl"
+        stateIDs        = "*" # we can also get one or more specific states e.g. 01,02,06
+        query_url_race       = "https://api.census.gov/data/"+str(censusQueryYear)+dataset_acronym+"?get="+censusVars+"&for=state:"+stateIDs+"&key=" + censusAPIKey
+
+        # Use requests package to call out to the API
+        response = requests.get(query_url_race) if not proxies else requests.get(query_url_race, proxies=proxies) 
+        print(response.text) 
+        
+        ## Convert the Response to text and print the result
+        labels=["State","Total","White", "Black", "ID"]
+
+        ## save the data as csv  
+        race_data = [ [x for x in json.loads(response.text)[1:] if id==x[4] ] for id in usaIDs]
+
+        race_data.insert(0, labels)
+
+        ## Open a new CSV file
+        csv.writer(open(race_data_path, 'w', newline='')).writerows(race_data)    
+
+##  -------------- Get USA census age sex data using excel tables
+def getUSACensusDataAgeSex(censusAPIKey=None, censusQueryYear=None, censusXLSXYear=None, forceDownload=None,
+                            usaIDs=None, usaSNames=None, usaAgeFolderPath=None, doSave=None,  proxies=None):
+        """
+        Calculates the area of a circle with the given radius.
+
+        Args:
+          radius (float): The radius of the circle.
+
+        Returns:
+           float: The area of the circle.
+        """      
+        proxies= {} if proxies is None else proxies  
+        forceDownload = 0 if forceDownload is None else forceDownload
+
+        ### Note: this query 2020 and 2021  age sex (does not cover details)
+        ##  query_url = "https://api.census.gov/data/2016/acs/acs1?get=group(B01001)&for=us:*&key=" + censusAPIKey
+        # The required data are available as xlxs for download    
+        query_url_age_sex = "https://www2.census.gov/programs-surveys/popest/tables/" + censusXLSXYear + "/state/asrh/sc-est2021-syasex-"
+        # download all files and convert to csvs
+        if not os.path.exists(usaAgeFolderPath):
+             os.mkdir(usaAgeFolderPath)
+        for i,id in enumerate(usaIDs):
+                    id       = "0" + str(id) if id <10 else str(id)
+                    fnm      = id + ".xlsx" 
+                    webLink  = query_url_age_sex + fnm 
+                    xlsxPath = os.path.join(usaAgeFolderPath,"usa-age-sex-"+censusXLSXYear+"-"+id+"-"+usaSNames[i]+".xlsx")
+                    csvPath  = xlsxPath[:-4]+"csv"
+                    # download only if file does not exist, to force download anyway use forceDownload=1
+                    if forceDownload or not os.path.exists(csvPath):
+                        try:
+                            print("downloading : ", csvPath)
+                            
+                            if proxies:
+                                # Define the proxy information
+                                proxy_handler = urllib.request.ProxyHandler(proxies)
+                                opener = urllib.request.build_opener(proxy_handler)
+                                urllib.request.install_opener(opener)
+
+                            urllib.request.urlretrieve(webLink, xlsxPath)
+                            #print("convert xlsx to csv ....")
+                            # read the excel file into a pandas dataframe
+                            df = pd.read_excel(xlsxPath,  engine='openpyxl')
+                            # write the dataframe to a csv file
+                            df.to_csv(csvPath, index=False)
+                            #print("removing old xlsx file ....")
+                            #os.remove(xlsxPath)
+                        except Exception as e: 
+                            print(e)      
+                    else:
+                        print("age-sex data file exist: ", csvPath) 
+
+## --------------------------------- Get USA Census Data                             
+def getUSACensusData(censusAPIKey, datasetFolder, censusQueryYear=None, censusXLSXYear=None, getAgeSexData=None, getRaceData=None,forceDownload=None,  doSave=None, proxies=None):
+    print("=========================== Getting USA Census DATA ================================")
+    if censusAPIKey==None:
+       print("please get your API key from here: https://api.census.gov/data/key_signup.html")
+       sys.exit(0)
+    impTimeStart = time.time()
+    proxies =  {} if proxies is None else proxies
+    censusQueryYear   = 2020 if censusQueryYear is None else censusQueryYear
+    censusXLSXYear    = "2020-2021" if censusXLSXYear is None else censusXLSXYear
+    doSave            = 0 if doSave is None else doSave
+    forceDownload     = 0 if forceDownload is None else forceDownload
+    getAgeSexData     = 1 if getAgeSexData is None else getAgeSexData
+    getRaceData       = 1 if getRaceData is None else getRaceData
+
+    # storage paths
+    # TODO: get from config file, also add using optional arguments from terminal
+    usaAgeFolderPath         = os.path.join(datasetFolder,"usaAge"+censusXLSXYear)
+    race_data_path           = os.path.join(datasetFolder,"usa-"+str(censusQueryYear)+"-states-race.csv")
+
+    # get USA states IDs, long and short names
+    # IDs and short names are useful to work with API and other libs
+    usaFIPS, usaSNames, usaLNames  = MDutils.getUSAstateNames() 
+ 
+    if getRaceData and not os.path.exists(race_data_path):        
+       getUSACensusDataRace(censusAPIKey,censusQueryYear, censusXLSXYear, forceDownload,usaFIPS,race_data_path,
+                             doSave, proxies=proxies)
+    else:
+        print("race data file exists: ", race_data_path)
+
+    if getAgeSexData: 
+       getUSACensusDataAgeSex(censusAPIKey,censusQueryYear, censusXLSXYear, forceDownload, 
+                              usaFIPS, usaSNames,usaAgeFolderPath, doSave, proxies=proxies)
+   
+    impTimeEnd = time.time() - impTimeStart
+    print("Import time process took: ", impTimeEnd, " seconds")
+    
+# if this script called directly
+if __name__ == "__main__":
+    # testing 
+    if len(sys.argv) > 1:
+       print("input arguments: ", sys.argv)
+
+
+
+# ffffffffffffffffffffffffffffffffffffffff
+# MDevaluate.py
+# ffffffffffffffffffffffffffffffffffffffff
+
+##=======================================================================================
+#                 Evaluate the results
+# Compare the statistics of the output synthetic dataset to the input statistics 
+##=======================================================================================
+
+import sys, os, time, re
+import numpy as np
+from fractions import Fraction as frac
+from synthMD import MDutils, MDcharts  
+
+#----------------- Printing with exception handling ----------------------
+def tryPrint(txt, L, dx, vs=None, roundPlaces=None):
+    logLine = ""
+    roundPlaces = 2 if roundPlaces is None else roundPlaces
+    try:
+       x1 = round((len(L)/dx)*100,5)
+       logLine =txt + " : " + str(f"{ str(x1):<10}  vs  {str(vs)} \n")
+    except Exception as e:
+       logLine= str(e)+"\n"  
+    
+    print(logLine)       
+    return logLine
+
+## ------------------------------------- getAgeGroupsEvaluation -------------------------------------  
+def getRaceSexEvaluation(i, RDnamesLst, outputData, totalNumberOfPatients, sexWeights, raceWeights, raceNamesLst, clinicalParsLst, 
+                            agePopulationsStatesAll, processingTime, logLines):
+    
+    roundPlaces = 2
+    # for all states for all 7 age groups 
+    # size: 51 x 7
+    agePopulations = agePopulationsStatesAll[2]
+    totalUSA = sum([sum(s) for s in agePopulations])
+
+    logLine = "=========================( "+ RDnamesLst[i] +" )========================\n"
+    logLines.append(logLine)
+    print(logLine)
+
+    logLine = " processing time in seconds: " +str(processingTime)+" \n"
+    logLines.append(logLine)
+    print(logLine)
+
+    logLine = "USA population: "+ str(totalUSA) +"\n"
+    logLines.append(logLine)
+    print(logLine)
+    pAll = len(outputData) -1
+    ## ----------------------------- total number of patients 
+    logLine = "Total patients: result vs expected: "+ str(pAll) + " , "+ str(totalNumberOfPatients) +"\n"
+    logLines.append(logLine )
+    print(logLine)
+
+    ## ----------------------------- Sex and Race Ratios
+    logLine = "----------- Ratios: sex, AA, EA, OA, Death \n"
+    logLines.append(logLine )
+    print(logLine)
+    #            0       1       2              3        4      5      6            7          8
+    # pData = [pCount, pAge, usStateNames[s] ,pZipCode, pSex, pRace, pBirthDate, pDiagDate, pDeathDate]
+    numF = ([x for x in outputData[1:] if x[4]=='f'])
+    numM = ([x for x in outputData[1:] if x[4]=='m'])
+
+    logLine = "number of male patients  : "+ str(len(numM)) +"\n"
+    logLines.append(logLine )
+    print(logLine)
+
+    logLine = "number of female patients: "+ str(len(numF)) +"\n"
+    logLines.append(logLine )
+    print(logLine)
+
+
+    logLine = tryPrint("Female ratio  : ", numF , pAll, sexWeights[i]                , roundPlaces )
+    logLines.append(logLine )
+
+    logLine = tryPrint("AA ratio      : ", [x for x in outputData[1:] if x[5]==raceNamesLst[0]], pAll, raceWeights[i][0], roundPlaces )
+    logLines.append(logLine )
+
+    logLine = tryPrint("AE ratio      : ", [x for x in outputData[1:] if x[5]==raceNamesLst[1]], pAll, raceWeights[i][1], roundPlaces )
+    logLines.append(logLine )
+
+    logLine = tryPrint("AO ratio      : ", [x for x in outputData[1:] if x[5]==raceNamesLst[2]], pAll, raceWeights[i][2], roundPlaces )
+    logLines.append(logLine )
+
+    ## ----------------------------- Clinical Parameters Ratios
+    pCP1 = [x[9] for x in outputData[1:]]
+    try:
+        logLine = "ClinicalPar1 Mean STD: "+ str(round(np.mean(pCP1),2)) + "\t" + str(round(np.std(pCP1),2))+ "\n"
+        logLines.append(logLine )
+        print(logLine)
+        logLine = "ClinicalPar1 Min Max : "+str(round(np.min(pCP1),2))+ "\t"+ str(round(np.max(pCP1),2))+"\t vs \t" +str(clinicalParsLst[i][0][2])+"\t"+str(clinicalParsLst[i][0][3])+ "\n"
+        logLines.append(logLine )
+        print(logLine)
+    except Exception as e:
+        print(e)
+
+    if len(outputData[0])==11:
+        pCP2= [x[10] for x in outputData[1:]]
+        try:
+            logLine = "ClinicalPar2 Mean STD: " + str(round(np.mean(pCP2),2)) + "\t" + str(round(np.std(pCP2),2)) + "\n"
+            logLines.append(logLine )
+            print(logLine)
+            logLine = "ClinicalPar2 Min Max : " + str(round(np.min(pCP2),2)) + "\t" + str(round(np.max(pCP2),2)) +"\t vs \t" + str(clinicalParsLst[i][1][2])+"\t"+str(clinicalParsLst[i][1][3]) + "\n"
+            logLines.append(logLine )
+            print(logLine)
+        except Exception as e:
+            print(e)
+
+    return logLines
+
+def getAgeGroupsEvaluation(i, outputData, agePopulationsStatesAll, pAll,totalUSA, rdAgeGroupsLst,roundPlaces,  logLines):
+   
+    mAgePopulations, fAgePopulations, agePopulations = agePopulationsStatesAll
+
+    logLine = " Age group percentages:------------ \n"
+    logLines.append(logLine )
+    print(logLine)
+
+    agePopulationsSum  = [ sum(s)for s in zip(*agePopulations)]
+    for k in range(len(rdAgeGroupsLst)):
+        L = [x for x in outputData[1:] if MDutils.getAgeGroupIndex(x[1])==k ]
+        logLine = tryPrint(" Age groups  "+rdAgeGroupsLst[k]+"\t" , L , pAll, round((agePopulationsSum[k]/totalUSA)*100, roundPlaces) , roundPlaces )
+        logLines.append(logLine )
+
+    logLine = " Age groups Female:------------ \n"
+    logLines.append(logLine )
+    print(logLine)    
+    agePopulationsFSum = [ sum(s)for s in zip(*fAgePopulations)]
+    for k in range(len(rdAgeGroupsLst)):
+        L = [x for x in outputData[1:] if MDutils.getAgeGroupIndex(x[1])==k and x[4]=='f']        
+        logLine = tryPrint(" Age groups  "+rdAgeGroupsLst[k]+"\t" , L , pAll, round((agePopulationsFSum[k]/totalUSA)*100, roundPlaces) , roundPlaces )
+        logLines.append(logLine )
+
+    logLine = " Age groups Male  :------------ \n"
+    logLines.append(logLine )
+    print(logLine)    
+    agePopulationsMSum = [ sum(s)for s in zip(*mAgePopulations)]
+    for k in range(len(rdAgeGroupsLst)):
+        L = [x for x in outputData[1:] if MDutils.getAgeGroupIndex(x[1])==k and x[4]=='m']        
+        logLine = tryPrint(" Age groups  "+rdAgeGroupsLst[k]+"\t" , L , pAll, round((agePopulationsMSum[k]/totalUSA)*100, roundPlaces) , roundPlaces )
+        logLines.append(logLine )
+    
+    return logLines, agePopulationsSum
+
+def getDeathGroupsEvaluation(i, outputData, deathRates, statePatientsDeads, statePatientsAlives, rdAgeGroupsLst,agePopulationsSum, logLines):
+    print(" Age groups Deaths: ")
+
+    # numberOfPatientsAges 51 x 7
+    # print(fix dead patients number vs ground truth and check for other diseases)
+    statePatientsDeadsSum  = [sum(s) for s in zip(*statePatientsDeads) ]
+    statePatientsAlivesSum = [sum(s) for s in zip(*statePatientsAlives)]
+
+    sumPatients   = 0
+    sumDead       = 0
+    sumPrevalence = 0
+    sumDeathRate  = 0
+
+    logLine = "age 	 population pat	  dead 	 expected 	 rate  rateGT     prevalence prevalenceGT  \n"
+    logLines.append(logLine)
+    print(logLine)
+
+    for k in range(len(rdAgeGroupsLst)):
+        # total number of people in this age group
+        groupPopulation                = agePopulationsSum[k]
+        numberOfPatientsPerGroup       = len([x for x in outputData[1:] if MDutils.getAgeGroupIndex(x[1])==k ])
+        # actual dead patients 
+
+        numberOfPatientsPerGroupDead = len([x for x in outputData[1:] if MDutils.getAgeGroupIndex(x[1]) == k and x[8] not in (None, 0)])
+
+        # ground truth dead patients 
+        numAgeDeadPtGT   =  int(statePatientsDeadsSum[k])
+        
+        # dead_group_patients / all_group_patients  
+        deathRate = f'{(numberOfPatientsPerGroupDead / numberOfPatientsPerGroup)*100:.5f}'
+
+        deathRateGT = f'{deathRates[i][k]:.7f}'
+
+        # prevalence
+        prevalence = f'{numberOfPatientsPerGroup / groupPopulation:.8f}'
+
+        # prevalenceGT
+        prevalenceGT = f'{numberOfPatientsPerGroup / groupPopulation:.8f}'
+
+        sumPatients  = sumPatients    + numberOfPatientsPerGroup
+        sumDead       = sumDead       + numberOfPatientsPerGroupDead
+        sumPrevalence = sumPrevalence + numberOfPatientsPerGroup / groupPopulation
+        sumDeathRate  = sumDeathRate  + numberOfPatientsPerGroupDead / numberOfPatientsPerGroup
+        try:
+            logLine =            str(rdAgeGroupsLst[k]) + ":\t  "+str(f" {str(groupPopulation):<6} {str(numberOfPatientsPerGroup):<6}  {str(numberOfPatientsPerGroupDead):<6} ")
+            logLine = logLine +  str( f"{str(numAgeDeadPtGT):<6} {str(deathRate):<6}  {str(deathRateGT):<6} {str(prevalence):<6} {str(prevalenceGT):<6}   \n")
+            logLines.append(logLine)
+            print(logLine)
+        except Exception as e:
+            print(e)
+
+    return logLines, sumPatients, sumDead, sumPrevalence, sumDeathRate    
+## ------------------------------------- getAgeGroupsEvaluation -------------------------------------  
+def getGroupsEvaluation(i, outputData, deathRates, agePopulationsStatesAll, numberOfPatientsAges, rdAgeGroupsLst, logLines):
+
+    pAll = len(outputData) -1
+    totalUSA = sum([sum(s) for s in agePopulationsStatesAll[2]])
+    roundPlaces = 2
+    statePatientsDeads   =  [ [ round((x/100.0) * y) for x,y in zip(deathRates[i], numberOfPatientsAges[s])] for s in range((51)) ]
+
+    statePatientsAlives  =  [ [ x-y for x,y in zip(numberOfPatientsAges[s], statePatientsDeads[s]) ] for s in range((51)) ]
+
+    logLines, agePopulationsSum =  getAgeGroupsEvaluation(i, outputData, agePopulationsStatesAll, pAll,totalUSA, rdAgeGroupsLst,roundPlaces,  logLines)
+
+    logLines, sumPatients, sumDead, sumPrevalence, sumDeathRate =getDeathGroupsEvaluation (i, outputData, deathRates, statePatientsDeads, statePatientsAlives, rdAgeGroupsLst,agePopulationsSum, logLines)
+
+    return logLines, sumPatients, sumPrevalence, sumDead, sumDeathRate
+
+def getDeathEvaluation(i, outputData, deathRates, numberOfPatientsAges, rdAgeGroupsLst, sumPatients, sumPrevalence, sumDead, sumDeathRate, logLines):    
+
+    # number of dead patients in the results 
+    numDeathResult = 0
+    try:
+        ## note, if it is processed, it will be zero instead of None
+        numDeathResult = len([x for x in outputData[1:] if x[8] not in (None, 0)])
+    except Exception as e:
+        print("Error numDeathResult:  ", e)
+        numDeathResult = 0
+    
+    # get expected death cases 
+    # number of dead and alive patients per state
+    #  dead patients  = deathRates * numer of patients in the state 
+    statePatientsDeads   =  [ [ round((x/100.0) * y) for x,y in zip(deathRates[i], numberOfPatientsAges[s])] for s in range((51)) ]
+    print("statePatientsDeads : ", statePatientsDeads)
+    print()
+    print("deathRates         : ", deathRates[i])
+    try:
+        totalNumberOfPatientsDead   = sum([sum(x) for x in statePatientsDeads])
+        print("Death cases       : ",numDeathResult ,"\t vs ", totalNumberOfPatientsDead)       
+        logLine = "Death cases       : " + str(numDeathResult) +"\t vs " + str(totalNumberOfPatientsDead) + "\n"
+        logLines.append(logLine )
+        print(logLine)
+    except Exception as e:
+        print("Error numDeath     : ", e)
+
+    logLine = "Total : ................................. \n"
+    logLines.append(logLine)
+    print(logLine)
+
+    logLine = "total Patients : " + str(sumPatients) + "\n"
+    logLines.append(logLine)
+    print(logLine)
+
+    logLine = "prevalence     : " + str(sumPrevalence) + "\t" + str(frac(sumPrevalence).limit_denominator()) +  "\n"
+    logLines.append(logLine)
+    print(logLine)
+
+    logLine = "total dead     : " + str(sumDead) + "\n"
+    logLines.append(logLine)
+    print(logLine)
+
+    sumDeathRate  = sumDeathRate   / len(rdAgeGroupsLst)
+    logLine = "death rate     : " + str(sumDeathRate) + "\t" + str(frac(sumDeathRate).limit_denominator()) +  "\n"
+    logLines.append(logLine)
+    print(logLine)
+    print("sumPrevalence : ", frac(sumPrevalence).limit_denominator())
+    print("sumDeathRate  : ", frac(sumDeathRate).limit_denominator())
+    return logLines
+
+#----------- Evaluation  ------------------
+# print statistics about results 
+def getEvaluation(i, RDnamesLst, rd_datasset_size, outputData, totalNumberOfPatients, sexWeights, raceWeights, raceNamesLst, clinicalParsLst, deathRates,
+                      agePopulationsStatesAll, numberOfPatientsAges, processingTime, rdAgeGroupsLst, sexlabels, raceLabels, resultFilePath, doSave=None, doPlot=None):
+       
+        doSave = 1 if doSave is None else doSave
+        doPlot = 1 if doPlot is None else doPlot
+    
+        logLines = []
+
+        # get total staistics  
+        logLines =  getRaceSexEvaluation(i, RDnamesLst, outputData, totalNumberOfPatients, sexWeights, raceWeights, raceNamesLst, clinicalParsLst,  
+                            agePopulationsStatesAll, processingTime, logLines)
+        
+        logLines, sumPatients, sumPrevalence, sumDead, sumDeathRate = getGroupsEvaluation(i, outputData, deathRates, agePopulationsStatesAll, numberOfPatientsAges, rdAgeGroupsLst, logLines)
+
+        # get death statistics
+        logLines = getDeathEvaluation(i, outputData, deathRates, numberOfPatientsAges, rdAgeGroupsLst, sumPatients, sumPrevalence, sumDead, sumDeathRate, logLines)
+
+        if doSave:
+            #------------------------------------------------
+            print("Saving results log  ...................")
+            #------------------------------------------------
+            resultsRDpath = os.path.dirname(resultFilePath)
+            logFilePath                   = os.path.join(resultsRDpath,"log_"+RDnamesLst[i]+"_"+str(rd_datasset_size)+".txt")
+            print("logFilePath : ", logFilePath)
+            with open(logFilePath, 'w') as fp:
+                for x in logLines:
+                    fp.write(x)  
+            fp.close() 
+
+        if doPlot:
+           MDcharts.plotRareDiseaseData(resultFilePath, sexlabels, raceLabels)
+
+def getAllEvaluation(cfgPath):
+    
+    cfg, RDsData, raceData, usaAgeSexData, usaAgeSexGroupData, paths = MDutils.readInputFiles(cfgPath)
+
+    usaAgeSexDataFilesPath, resultsFolderPath= paths
+
+    RDnamesLst        = [x["name"]          for x in RDsData]
+    RDFileNamesLst    = [x["short_name"]    for x in RDsData]
+    rd_datasset_size  = cfg["rd_datasset_size"]["rd_dataset_size_value"]
+
+    raceWeights, total_USA_Population_From_Race, prevalenceRaceLst, racePopulations, racePopulationsSt  = MDutils.getRaceData(raceData, RDsData) 
+   
+    clinicalParsLst = [[ [ val for val in cp.values()]  for cp in rd['clinical_parameters'] ] for rd in RDsData]
+    sexWeights      = [x[1] for x in [list(rd['sex_percentage'].values()) for rd in RDsData]]
+    rdAgeGroupsLst  = list(cfg["rdAgeGroupsLst"])
+    usaNames        = MDutils.getUSAstateNames()
+    sexlabels       = list(cfg["sexLabels"])
+    raceLabels      = list(cfg["raceLabels"])
+    raceNamesLst    = [x.split(",")[0] for x in list(RDsData[0]["race_percentage"]["races"].keys())]
+    deathStatistics = [list(rd['death_percentage']["rates"].values()) for rd in RDsData]
+    deathRates      = deathStatistics
+
+    for i, rd in enumerate(RDnamesLst):
+        startRdTm = time.time()
+
+        resultsRDpath= os.path.join(resultsFolderPath,rd)
+        print(resultsRDpath)
+        if not os.path.exists(resultsRDpath):
+          os.mkdir(resultsRDpath)  
+   
+        fnm = [ x for x in os.listdir(resultsRDpath) if "_all_" in x][0]
+        resultFilePath = os.path.join(resultsRDpath,fnm,RDFileNamesLst[i]+"_"+ fnm+".csv")
+
+        # read the result file and get its statitics
+        maxUSAAge, dataLabels, rdFinalData =  MDutils.readingCSVdata(resultFilePath, 0)
+
+        totalNumberOfPatients   = round(sum([ (x *  y) for x,y in zip(prevalenceRaceLst[i], racePopulations)]))  
+        numberOfPatientsStatesRace    = [ int(sum([(x *  y) for x,y in zip(prevalenceRaceLst[i], racePopulation)]))  for racePopulation in racePopulationsSt ]
+        numberOfPatientsStatesResized = [  x for x in numberOfPatientsStatesRace]
+      
+
+        numberOfPatientsStatesFinal   = numberOfPatientsStatesResized   if rd_datasset_size > 0 else numberOfPatientsStatesRace  
+        numberOfPatientsForAgeGroups  = [ [ round(x/sum(usaAgeSexGroupData[2][k]) * numberOfPatientsStatesFinal[k]) for x in usaAgeSexGroupData[2][k]] for k in range(len(usaNames[1]))]
+
+        enddRdTm = time.time()-startRdTm
+
+        getEvaluation(i, RDFileNamesLst, rd_datasset_size, rdFinalData, totalNumberOfPatients, sexWeights, raceWeights, raceNamesLst, 
+                                       clinicalParsLst, deathRates, usaAgeSexGroupData, numberOfPatientsForAgeGroups,enddRdTm, 
+                                       rdAgeGroupsLst,sexlabels,raceLabels, resultFilePath, doSave=1, doPlot=1)
+        
+
+def parse_file(file_name):
+    data = {}
+    with open(file_name, 'r') as f:
+        lines = f.readlines()
+        cp = 1
+        data['ClinicalPars'] = []
+        for line in lines:
+            # -------------- General Info ---------------------------    
+            if 'USA population' in line:
+                data['USA population'] = re.findall(r'\d+', line)[0]
+            elif 'number of male patients' in line:
+                data['number of male patients'] = re.findall(r'\d+', line)[0]
+            elif 'number of female patients' in line:
+                data['number of female patients'] = re.findall(r'\d+', line)[0]
+            elif 'prevalence' in line and not 'prevalenceGT' in line:
+                data['prevalence'] = re.findall(r'[\d.]+', line)[0]
+                data['prevalence fractions'] = re.findall(r'\d+/\d+', line)[0]
+            elif 'total dead' in line :                
+                data['total dead'] = re.findall(r'\d+', line)[0]
+            elif 'death rate' in line:
+                data['death rate'] =line.split(':')[1:]
+            # -------------- Result vs Expected ---------------------------    
+            elif 'Total patients' in line:
+                data['Total patients'] = re.findall(r'\d+', line)
+            elif 'Death cases' in line:
+                data['Death cases'] = re.findall(r'\d+', line)
+            elif 'Female ratio' in line:
+                data['Female ratio'] = re.findall(r"[-+]?\d*\.\d+|\d+", line)
+            elif 'AA ratio' in line:
+                data['AA ratio'] =  re.findall(r"[-+]?\d*\.\d+|\d+", line)
+            elif 'AE ratio' in line:
+                data['AE ratio'] =  re.findall(r"[-+]?\d*\.\d+|\d+", line)
+            elif 'AO ratio' in line:
+                data['AO ratio'] =  re.findall(r"[-+]?\d*\.\d+|\d+", line)
+            elif 'ClinicalPar' in line and not 'Mean' in line:
+                vals = line.split(":")[1].split()
+                cpMin= str(float(vals[0]))+' , '+str(float(vals[3]))
+                cpMax= str(float(vals[1]))+' , '+str(float(vals[4]))
+                data['ClinicalPars'].append([cpMin,cpMax])
+                cp =cp + 1
+        # ---------------- Age Groups: Total, Male, Female--------------------------    
+        for l in range(len(lines)):
+            if 'Age groups' in lines[l]:
+                break 
+        for i in ["Total ", "Female ","Male "]:
+            for j in ["<5","5-14","15-19","20-24","25-39","40-60",">60"]:
+                vals = lines[l].split(":")[1].split("vs") 
+                txt = str(float(vals[0]))+' , '+str(float(vals[1]))  
+                data[i + j] = txt
+                l = l +1 
+            l=l+1 
+        # -------------- Age Groups: Death Info----------------------------    
+        for l in range(len(lines)):
+           if 'age' in lines[l] and 'population' in lines[l]:            
+            break 
+        l = l + 1
+        for j in ["<5","5-14","15-19","20-24","25-39","40-60",">60"]:
+            txt = [str(float(x)) for x in lines[l].split(":")[1].split() ]
+            data["death " + j] = txt
+            l = l + 1
+    return data
+
+def write_comparison(RDNames,filesData, output_file):
+    
+    latexTables = []
+    
+    with open(output_file, 'w') as f:
+        # Iterate through each rare disease results  
+        tblCaption = "Summary of Patient Data"
+        tblLabel = "table:tbl01"
+        tblFormat = "|c|c|c|c|c|c|"
+        tblHeadTxt = "Number of Patients, Male , Female , Total , Prevalence (Fractions) , Total Dead"
+        tblHead = [tblHeadTxt]
+        tblRows = [] 
+
+        txt = " --------------"+tblCaption +"---------------------------"    
+        f.write(txt+"\n")
+        print(txt)
+        for i in range(len(filesData)): 
+            txt = f"{RDNames[i]} USA population: {filesData[i]['USA population']}"
+            print(txt)
+            f.write(txt+"\n")
+        f.write(tblHeadTxt+"\n")
+        print(tblHeadTxt)
+        for i in range(len(filesData)): 
+            txt = f"{RDNames[i]} number of patients  : {filesData[i]['number of male patients']}, {filesData[i]['number of female patients']}, \
+                    {int(filesData[i]['number of male patients']) + int(filesData[i]['number of female patients'])}, {filesData[i]['prevalence']}\
+                     ({filesData[i]['prevalence fractions']}), {filesData[i]['total dead']}"
+            tblRows.append([txt])
+            # txt = txt[:-1]
+            print(txt)
+            f.write(txt+"\n")  
+        
+        txtTable = [ tblHead ]
+        for row in tblRows:
+            txtTable.append(row)
+
+        latexTables.append(getLatexTable(txtTable, tblCaption, tblLabel , tblFormat))
+
+        tblCaption = "Result vs Expected for SCD, CF, and DMD"
+        txt = " --------------"+tblCaption +"---------------------------"    
+        print(txt)
+
+        tblLabel = "table:tbl02"
+        tblFormat = "p{2.9cm}|d{1} d{1}|d{1} d{1}|d{1} d{2}|"
+        tblHeadTxt1 = r", \multicolumn{2}{c}{SCD} , \multicolumn{2}{|c}{CF} , \multicolumn{2}{|c|}{DMD}"
+        tblHeadTxt2 = r", Result , Expected , Result , Expected , Result , Expected"
+                 
+        tblHead1 = [tblHeadTxt1]
+        tblHead2 = [tblHeadTxt2]
+        tblRows = [] 
+
+        f.write(txt+"\n")
+        print(tblHeadTxt1)
+        f.write(tblHeadTxt1+"\n")
+        print(tblHeadTxt2)
+        f.write(tblHeadTxt2+"\n")
+        tmpHeadLst = ['Total patients', 'Death cases', 'Female \%', 'African American \%','European American \%','Other American \%']
+        for k,par in enumerate(['Total patients', 'Death cases', 'Female ratio', 'AA ratio','AE ratio','AO ratio']):
+            txt = tmpHeadLst[k]+" : " ; t= ""
+            for i in range(len(filesData)): 
+                t  = t + ' , '.join(filesData[i][par]) + " , "
+            txt = txt + t[:-2]
+            print(txt)
+            f.write(txt+"\n") 
+            tblRows.append([txt])
+
+        txtTable = [ tblHead1, tblHead2]
+        for row in tblRows:
+            txtTable.append(row)
+
+        latexTables.append(getLatexTable(txtTable, tblCaption, tblLabel , tblFormat))
+
+        txt =" ---------------- Age Groups: Total, Male, Female--------------------------"
+        print(txt)
+        f.write(txt+"\n")
+        txt = "Sex, Age group," + ", ".join([f"{name} result, {name} expected" for name in RDNames])
+        print(txt)
+        f.write(txt+"\n")
+        for j in ["Total ", "Female ","Male "]:
+            for k in ["<5","5-14","15-19","20-24","25-39","40-60",">60"]:
+                txt = j+k+" : "
+                t = ""
+                for i in range(len(filesData)): 
+                    t = t + filesData[i][j+k] +" , "                    
+                txt = txt + t[:-2]     
+                print(txt)
+                f.write(txt+"\n")
+
+        tblCaption = "Clinical Parameters: Result vs Expected"
+        txt = " --------------"+tblCaption +"---------------------------"    
+        print(txt)
+
+        tblLabel = "table:tbl03"
+        tblFormat = "lccr"
+        tblHeadTxt = "Disease, Parameter , Result, Expected"
+        tblHead = [tblHeadTxt]
+        tblRows = [] 
+
+        parNames = [["CBC (g/dL)", r"RC(\%)"], ["CH (mmol/L)"],  ["CK (unit/L)"]]
+
+        f.write(txt+"\n")
+        for i in range(len(filesData)):
+           for j,cp in enumerate(filesData[i]['ClinicalPars']):
+               txt =(RDNames[i]).upper()  +' , ' + parNames[i][j] + ' Min :' + cp[0] 
+               print(txt)
+               f.write(txt+"\n")
+               tblRows.append([txt])
+               txt = (RDNames[i]).upper() +' , ' + parNames[i][j] + ' Max :' + cp[1] 
+               print(txt)
+               f.write(txt+"\n")
+               tblRows.append([txt])
+
+        txtTable = [tblHead]
+        for row in tblRows:
+            txtTable.append(row)
+
+        latexTables.append(getLatexTable(txtTable, tblCaption, tblLabel , tblFormat))
+
+        txt =" ---------------- Age Groups: Death Info --------------------------"
+        print(txt)
+        f.write(txt+"\n")
+        tblHead = ["Age Group ,Population , Patients , Death Result ,Death Expected , Death Rate Result , Death Rate , Prevalence Result , Prevalence"]
+
+        for i in range(len(filesData)): 
+            tblCaption = RDNames[i].upper() + " Death Information"
+            txt = " --------------"+tblCaption +"---------------------------"    
+            print(txt)
+            f.write(txt+"\n")
+            tblLabel = "table:tbl0"+str(i+4)
+            tblFormat = "|p{0.8cm}|p{1.3cm}|p{1cm}|p{1cm}|p{1cm}|p{1cm}|p{1cm}|p{1.1cm}|p{1.1cm}|"
+            tblRows = [] 
+            txt = "Age Group , Population , Patients , Res. Death , Exp Death, Res. Death Rate , Exp. Death Rate , Res. Prevalence , Exp. Prevalence"
+            tblHead = [txt]
+            print(txt)
+            f.write(txt+"\n")
+            for k in ["<5","5-14","15-19","20-24","25-39","40-60",">60"]:
+                t = str(filesData[i]["death " + k]).replace("'","").replace("[","").replace("]","") 
+                t = t.split(",") 
+                t = [ int(float(t[0])),int(float(t[1])),int(float(t[2])),int(float(t[3])),float(t[4]),float(t[5]),float(t[6]),float(t[7])]                  
+                t = [str(x) for x in t ]
+                # join the formatted numbers back into a single string
+                t = ', '.join([f"{int(num):,}" if '.' not in num else f"{float(num):,.2f}" 
+                               if int(float(num)) != 0 else f"{float(num):,.6f}".rstrip('0').rstrip('.')
+                                 if len(num.split('.')[1]) > 2 else f"{float(num):,}" for num in t])
+
+                txt = " " + k  +" , " + t
+                print(txt)
+                f.write(txt+"\n")   
+                k = r"\textless{}5 "     if "<" in k else k
+                k = r"\textgreater{}60 " if ">" in k else k
+                txt = " " + k  +" , " + t
+                tblRows.append([txt])
+            txtTable = [tblHead]
+            for row in tblRows:
+                txtTable.append(row)
+
+            latexTables.append(getLatexTable(txtTable, tblCaption, tblLabel , tblFormat))
+
+    f.close()
+
+    return latexTables
+
+
+def getLatexTable(txtTable, tblCaption, tblLabel , tblFormat):
+    hLine = r"\hline"
+    
+    latexTable = []
+    latexTable.append(r"\begin{table}[h!]")
+    latexTable.append(r"\centering")
+    latexTable.append(r"\hline")
+    latexTable.append(r"\begin{tabular}{"+ tblFormat +"}")
+    for row in txtTable:
+        line = row[0].replace(', ', ' & ').replace(':','&') + " \\\\"
+        latexTable.append(line)
+        latexTable.append(r"\hline")
+    latexTable.append(r"\end{tabular}")
+    latexTable.append(hLine)
+    latexTable.append(r"\caption{"+ tblCaption+ "}")
+    latexTable.append(r"\label{" + tblLabel + "}")
+    latexTable.append(r"\end{table}")
+    return latexTable
+
+def writeLatexTables(latexTables, outputPath):
+    print("writing latex tables ........")
+    # Check if file exists
+    if not os.path.exists(outputPath):
+        print("create new file:", outputPath)
+        # If it doesn't exist, create it by opening it in write mode
+        with open(outputPath, 'w') as f:
+            pass
+
+    # Open the file in append mode ('a') and write some text to it
+    with open(outputPath, 'a') as f:
+         print("file exist, add at the end of the file: ", outputPath)
+         for tbl in latexTables:
+             for line in tbl:
+                 f.write(line + "\n")
+    f.close()
+
+def getAllSummeryEvaluation(RDNames, resultPaths, outputPath):
+    print("collecting results from all result files in : ", resultPaths)
+    filesData =  [parse_file(file_name) for file_name in resultPaths]
+    latexTables = write_comparison(RDNames,filesData, outputPath)
+    writeLatexTables(latexTables, outputPath)
+
+
+# if this script called directly
+if __name__ == "__main__":
+    # testing 
+    if len(sys.argv) > 1:
+       print("input: ", sys.argv)
+
+# ffffffffffffffffffffffffffffffffffffffff
+# MDcreate.py
+# ffffffffffffffffffffffffffffffffffffffff
+
+##=======================================================================================
+#                 Create Synthetic data set
+##=======================================================================================
+import os, sys, csv, time, datetime, random
+import numpy as np
+# for zip codes
+from pyzipcode import ZipCodeDatabase
+zcdb = ZipCodeDatabase()
+from synthMD import MDevaluate, MDutils
+
+# -------------------- generateGroupPatientsgData---------------------
+def getStateGroupPatients(patentsCount, ageDist, sexDist, rdAgeGroupsLst,deathRateAgeDists, stateZips,raceDist,ageDiagDist,parData,
+                              addTimeToDates, usaNames, s ):
+        
+        usaIDs,  usaStateShortNames, usaStateLongNames  = usaNames
+        groupPatientsData=[]
+        for g, ag in enumerate(rdAgeGroupsLst):                       
+            # get age group distribution and shuffle it 
+            # instead of random sampling we will pick element each time 
+
+            gDist = ageDist[g] if s is None else ageDist[s][g]
+            random.shuffle(gDist)
+
+            # get death distribution of this age group 
+            ageDeadDist  = deathRateAgeDists[g]               
+             
+            # reset patients counter 
+            p = 0
+            for p in range(len(gDist)):
+                
+                # the patient should be distributed based on race, and gender statistics 
+                               
+                pState    = usaStateShortNames[random.randint(0,50)] if  s is None  else s
+             
+                pSex      = random.choice(sexDist[g])  #  if  s is None  else random.choice(sexDist[s])          
+
+                # select sex randomlly based on the rare disease weight and the population of this age group
+                patentsCount = patentsCount + 1
+
+                #  get random age from current age group  
+                pAge      = gDist.pop() 
+                         
+                pZipCode = random.choice(stateZips)
+                        
+                pRace = random.choice(raceDist) 
+
+                # generate random birthdate based on age
+                pBirthDate = datetime.date(2023,1,1) + datetime.timedelta(days=-pAge*365)
+
+                #  generate random diagonsis date based on the birthdate and the disease
+                ageDiagFactor = round(random.choice(ageDiagDist))
+                pDiagDate     = pBirthDate + datetime.timedelta(days=ageDiagFactor)
+
+                # get death date if patient is dead, the age and death rate decide the death status
+                pDeathDate = None
+
+               # check if the patient is alive or not            
+                isAlive  = random.choice(ageDeadDist) 
+
+                # check the gender 
+                if not isAlive:  
+                    pBirthDate, pDiagDate, pDeathDate = MDutils.getDeathDate(pAge, pBirthDate, pDiagDate, ageDiagFactor, addTimeToDates)            
+                elif addTimeToDates:
+                    pBirthDate =  MDutils.getRandomTime(pBirthDate)
+                    pDiagDate  =  MDutils.getRandomTime(pDiagDate)  
+                else:
+                    pBirthDate = str(pBirthDate)
+                    pBirthDate = pBirthDate[:10]  if len( pBirthDate)>10 else pBirthDate                           
+                    pDiagDate  = str(pDiagDate)  
+                
+                # TODO:  fix a bug of time is added 
+                # generate clinical parameters based on the disease
+                pParData = [round(random.choice(x),3) for x in parData]                              
+
+                # create a patient data row
+                pData = [patentsCount, pAge, usaStateLongNames[pState] ,pZipCode, pSex, pRace, pBirthDate, pDiagDate, pDeathDate]
+                pData.extend(pParData)
+
+                # get next patient for this age group  
+                p = p + 1
+
+                groupPatientsData.append(pData)
+
+        return patentsCount, groupPatientsData
+
+
+def getStatePatients(i,s,st, usaAgeSexGroupData, patentsCount, deathRates,numberOfPatientsForAgeGroups, sexWeight, rdSexWeight, rdAgeGroupsLst,
+                     stateAgeDistLst, ageDiagDist, raceDist, parData, addTimeToDates, usaNames, raceNamesLst, raceWeights, sexlabels):
+            """
+            Get all aptients for a state st. This function calls generateGroupPatientsData which generates 
+            patients for each age group for current state. 
+            """
+
+            ## Get all zip codes for this state
+            stateZips    = [z.zip for z in zcdb.find_zip(state=st)]; stateZips = [z.zfill(5) for z in stateZips]
+
+            # sex weight from age group population
+            # femaleCount / femaleCount+maleCount
+            sexWeightAges   = [round(( usaAgeSexGroupData[1][s][g]/( usaAgeSexGroupData[1][s][g]+ usaAgeSexGroupData[0][s][g]))*100) for g in range(len(rdAgeGroupsLst))]
+            totalSexWeight  = [int(round( sexWeight * rdSexWeight + sexWeightAges[g]  * (1-rdSexWeight) )) for g in range(len(rdAgeGroupsLst))]
+            # create sex distribution for this age group of this state 
+            sexDist = [MDutils.getGroupDistriution(['f','m'], [totalSexWeight[g], 100-totalSexWeight[g]]) for g in range(len(rdAgeGroupsLst))]
+            
+            deathRateAgeDists  = MDutils.getStatesDeathRateDists(s, deathRates[i], numberOfPatientsForAgeGroups[s])  
+            
+            # --------------- Get all patirnts for each age group of the current state 
+            patentsCount, pData = getStateGroupPatients(patentsCount, stateAgeDistLst, sexDist, rdAgeGroupsLst,deathRateAgeDists, 
+                                                        stateZips, raceDist, ageDiagDist,parData,addTimeToDates, usaNames=usaNames,  s = s )
+            
+            return   patentsCount, pData
+
+def createSyntheticDatasets(cfg, RDsData, raceData, usaAgeSexData, usaAgeSexGroupData, paths, doEvaluation=None):
+   """
+   Create synthetic datasets for each rare disease in the input RDsData.
+   """
+
+   doEvaluation = 1 if doEvaluation is None else doEvaluation
+
+   usaAgeSexDataFilesPath, resultsFolderPath= paths
+             
+   #----- Extract required fields and prepare the data  
+
+   # Names, short names, and orpha codes 
+   RDnamesLst        = [x["name"]          for x in RDsData]
+   RDFileNamesLst    = [x["short_name"]    for x in RDsData]
+
+   #Race groups 
+   raceNamesLst      = [x.split(",")[0] for x in list(RDsData[0]["race_percentage"]["races"].keys())]
+
+   rd_datasset_size  = cfg["rd_datasset_size"]["rd_dataset_size_value"]
+   rd_datasset_size_lbl = "all_patients" if rd_datasset_size==0 else str(rd_datasset_size)
+   addTimeToDates    = cfg["addTime2Date"]
+
+   # rdAgeGroupsLst  = [  "<5"   ,"5-14"  ,"15-19"  ,"20-24"  ,"25-39"  ,"40-60"  ,">60"]
+   rdAgeGroupsLst    = list(cfg["rdAgeGroupsLst"])
+
+   sexlabels       = list(cfg["sexLabels"])
+   raceLabels      = list(cfg["raceLabels"])
+   usaNames          = MDutils.getUSAstateNames()
+   usaStateShortNames  = usaNames[1]
+   
+   # 1: generates dates + time, 0: generate date only 
+   addTime2Date = int(cfg["addTime2Date"])
+
+   print("=======================================================================")
+   print("        RD DATA CREATION START!!! Expected size: ", rd_datasset_size_lbl)
+   print("=======================================================================")
+
+   total_number_of_patients = rd_datasset_size
+
+   # List: Population of each state 
+   # 1 x 51 
+   statePopulations       = [sum(x) for x in usaAgeSexGroupData[2]]
+
+   # This is the total population
+   # will be used to compute contribution of each state
+   total_USA_Population_From_Age  = sum(statePopulations) 
+
+   raceWeights, total_USA_Population_From_Race, prevalenceRaceLst, racePopulations, racePopulationsSt  = MDutils.getRaceData(raceData, RDsData) 
+
+   ## Note, there is a small error e.g. 
+   ## age: 331448970,  race: 331449281, diff = 311   
+   total_USA_Population = int((total_USA_Population_From_Race+total_USA_Population_From_Age)/2)
+   print("total_USA_Population = ", total_USA_Population)
+   
+   # Age populations per age groups 
+   # size: 1 x 7
+   # chart should be similar to e.g. usa-2020-states-age-sex-female_grp
+   usaStatesAgeSexBothGroupSumStates   = [ sum( row[c] for row in usaAgeSexGroupData[2])    for c in range(len(usaAgeSexGroupData[2][0]))   ]
+       
+   # RD: Minimum and maximum days after birth for diagnostic
+   # For simplicity: Using days unit. Month = 30 days and Year = 365 days
+   diagDateLst = [list(rd['diagnosis_dates'].values())[:-1] for rd in RDsData]
+   
+   # RD: Clinical parameters
+   clinicalParsLst = [[ [ val for val in cp.values()]  for cp in rd['clinical_parameters'] ] for rd in RDsData]
+
+   # RD: Death rates per age group (7 age groups)
+   deathStatistics = [list(rd['death_percentage']["rates"].values()) for rd in RDsData]
+   # TODO: find solution or statistics
+   #        we can use the total number of dead patients to compute the correction factor or
+   #        find statistics about number of patients per age  
+
+   # percentage of female affected for each rare disease
+   sexWeights = [x[1] for x in [list(rd['sex_percentage'].values()) for rd in RDsData]]
+   
+   #  sex weight control   
+   rdSexWeight = 0.990001 # if 1.0, ageSexWeight will not included
+
+   raceDists =[MDutils.getGroupDistriution(raceNamesLst, raceWeights[i]) for i in range(len(RDnamesLst))]
+
+   print("Creating the rare disease dataset   ..............")
+
+   #---------------------------------------
+   number_of_generated_patients_Lst = []
+   ## Loop through diseases list:
+   for i, rd in enumerate(RDnamesLst):
+         
+      startRdTm = time.time() 
+      j = i + 1 # to start from first row
+      print("---------------------------------------------------")
+      print('           ',j, rd)
+      print("--------------------------------------------------")
+      
+      # Compute total number of patients for this disease based on race  
+      total_expected_patients   = round(sum([ (x *  y) for x,y in zip(prevalenceRaceLst[i], racePopulations)]))  
+
+      # Compute number of patients for each age group
+      ageGroupPatients   = [ int((x/sum(usaStatesAgeSexBothGroupSumStates))*total_expected_patients)  for x in usaStatesAgeSexBothGroupSumStates]  
+      # Compute total death cases
+      total_expected_death         = round(sum([ (x *  y/100.0) for x,y in zip(ageGroupPatients, deathStatistics[i])]))  
+      print("Total expected number of patients = ", total_expected_patients)      
+      print("Total expected death cases        = ", total_expected_death)  
+      if rd_datasset_size > total_expected_patients:
+         print("Error: Dataset size must be smaller than total number of patients")
+         print("To generate all possible patients change rd_dataset_size_value to 0 in config.json")
+         print("User input size: ",rd_datasset_size, " total number of patients: ",total_expected_patients) 
+         sys.exit()
+
+      # Create results folder 
+      resultsRDpath= os.path.join(resultsFolderPath,rd)
+      if not os.path.exists(resultsRDpath):
+         os.mkdir(resultsRDpath)  
+
+      # Initialization
+      # Reset dat list, labels, and patients counter 
+      patientsData = []
+      # reset dataset labels 
+      patientsDataLabels = list(cfg["outputDataLabels"])
+      patentsCount = 0
+     
+      # Clinical parameters: create normal distribution
+      parNames  = [x[0]+":"+x[1] for x in clinicalParsLst[i]]
+      parValues = [[ x[2],x[3] ] for x in clinicalParsLst[i]]
+      parData   = [MDutils.sampleFromNormalDistribution(minVal=x[0], maxVal=x[1], sampleSize=100000) for x in parValues]                              
+      # add labels of the clinical parameters 
+      patientsDataLabels.extend(parNames)    
+      # add the labels to the dataset 
+      patientsData.append(patientsDataLabels)
+      
+      # Date of diagnostic: create normal distribution      
+      ageDiagDist = MDutils.sampleFromNormalDistribution(minVal=diagDateLst[i][0], maxVal=diagDateLst[i][1], sampleSize=100000)           
+
+      # number of patients for each state based on race inforrmation           
+      # 51 elements, each is the total number of patients
+      numberOfPatientsStatesRace    = [ int(sum([(x *  y) for x,y in zip(prevalenceRaceLst[i], racePopulation)]))  for racePopulation in racePopulationsSt ]
+
+      numberOfPatientsStatesResized = [  x for x in numberOfPatientsStatesRace]
+      
+      # final number of patients for each state 
+      numberOfPatientsStatesFinal   = numberOfPatientsStatesResized   if rd_datasset_size > 0 else numberOfPatientsStatesRace  
+      
+      # Generate number of patients for each age group based on the above information
+      # Note: we don't have statistics about number of patients per age group 
+      # number of patient for each age group for each state:  51 x 7  
+      #                           ageRatio * total_expected_patients                            
+      numberOfPatientsForAgeGroups  = [ [ round(x/sum(usaAgeSexGroupData[2][k]) * numberOfPatientsStatesFinal[k]) for x in usaAgeSexGroupData[2][k]] for k in range(len(usaStateShortNames))]
+     
+      stTotals = [sum(usaAgeSexGroupData[2][s])  for s in range(len(usaStateShortNames))] 
+      numPSTs  = [round((stTotals[s]/total_USA_Population) * total_expected_patients) for s in range(len(usaStateShortNames))] 
+      
+
+      # ------ create age distribution for each state          
+      # 7 x 96  age groups and their age distributions
+      # for each age, we create a distribution based on the population of each state
+      #                             age group 0                                                                    age group n
+      # the output should be [ [[age_0]*age_0_percentage],...,[[age_n]*age_percentage_n]],...,[[age_0]*age_0_percentage],...,[[age_n]*age_percentage_n]] ] 
+      # this way we can select randomly from each age group
+      stateAgeDistLst = [MDutils.getAgeDistribution(usaAgeSexData[2][s], numPSTs[s], rdAgeGroupsLst, total_number_of_patients) for s in range(len(usaStateShortNames))] 
+      
+
+      # ------------------------------------   Main Loop:  -------------------------------------------
+      # The output should follow the state and the age groups distributions  
+      #   - we generate patients for each state 
+      #   -    we generate patients for each age group of current state   
+      for s, st in enumerate(usaStateShortNames):
+
+           patentsCount, pData =  getStatePatients(i,s, st,usaAgeSexGroupData,  patentsCount, deathStatistics, numberOfPatientsForAgeGroups, sexWeights[i], rdSexWeight, rdAgeGroupsLst,
+                     stateAgeDistLst, ageDiagDist, raceDists[i], parData, addTimeToDates, usaNames, raceNamesLst, raceWeights[i], sexlabels)
+           
+           patientsData.extend( pData)
+      
+      deadCount=len([x for x in patientsData if not x[8] in (0,None)])
+      print("Number of generated patients: ", len(patientsData[1:]))
+      print("Number of dead patients     : ", deadCount)
+      number_of_generated_patients_Lst.append(len(patientsData[1:]))
+
+      print("-------------------     Get The final output   -------------------------")
+      # it is more efficient to generate all paatients then sample from them 
+      # the large the sample , the more the similarity to the original distribution 
+      # TODO: there is an issue here: the patients are not distributed equally e.g. among states, age groups, etc
+      #        a new function should be writtern to handle this 
+      rdFinalLabels = patientsData[0]
+      rdFinalData   = patientsData[1:]
+      np.random.shuffle(rdFinalData)
+      
+      if rd_datasset_size > 0 : 
+         print("Sampling ", rd_datasset_size)
+         # take first part of the shuffled data
+         rdFinalData = rdFinalData[0:rd_datasset_size-1]    
+
+      rdFinalData.insert(0,rdFinalLabels)      
+      
+      print("-------------------     Saving Generated data     -------------------------")
+      rd_datasset_size_str = "patients_"+str(rd_datasset_size) if rd_datasset_size > 0 else "patients_all_"+str(len(rdFinalData)-1)
+      resultsRDDatasetPath= os.path.join(resultsRDpath, rd_datasset_size_str)
+      rdFinalDataFilePath = os.path.join(resultsRDDatasetPath, RDFileNamesLst[i]+"_"+rd_datasset_size_str+".csv")
+
+      if not os.path.exists(resultsRDDatasetPath):
+         os.mkdir(resultsRDDatasetPath)  
+      csv.writer(open(rdFinalDataFilePath, "w", newline=''), delimiter=";").writerows(rdFinalData)    
+      
+      endTmDataGeneration = time.time() - startRdTm 
+      print(" Data generation time = ", endTmDataGeneration, " seconds")
+      if doEvaluation:
+         print("-------------------     Evaluation    -------------------------")
+         MDevaluate.getEvaluation(i, RDFileNamesLst, rd_datasset_size, rdFinalData, total_expected_patients, sexWeights, raceWeights, raceNamesLst,
+                                   clinicalParsLst, deathStatistics, usaAgeSexGroupData, numberOfPatientsForAgeGroups,startRdTm ,rdAgeGroupsLst,sexlabels,
+                                   raceLabels, rdFinalDataFilePath, doSave=1, doPlot=1)
+   
+   return number_of_generated_patients_Lst
+
+# if this script called directly,
+if __name__ == "__main__":
+   # testing 
+   if len(sys.argv) > 1:
+      print("input: ", sys.argv)
+
+# ffffffffffffffffffffffffffffffffffffffff
+# MDcharts.py
+# ffffffffffffffffffffffffffffffffffffffff
+
+import sys, os, time
+import matplotlib.pyplot as plt, numpy as np, geopandas as gpd, pandas as pd 
+import matplotlib.patheffects as PathEffects
+from synthMD import MDutils 
+
+# saving chart data to csv file for external processing if needed
+def saveChartData(inputData,figPath):
+
+    if inputData[2] is None:
+       inputData[2] =list(range(len(inputData[0])))
+    if inputData[3] is None:
+       inputData[3] =list(range(len(inputData[0])))
+    
+    if len(inputData[0]) == len(inputData[-1]):
+       data = [[x,y,xT,xTLbl] for x,y,xT,xTLbl in zip(*inputData)]
+    else:
+       X,Y,Xticks,statesLabels = inputData
+       data = [[x,y,xT] for x,y,xT in zip(X,Y,Xticks)] 
+
+    fnmPath = figPath[:-4] + ".csv"
+    with open(fnmPath, 'w') as f:
+        for row in data:
+            line = "%s\n" % "; ".join([str(item) if isinstance(item, int) else f"'{item}'" for item in row])
+            f.write(line)
+
+    f.close()
+
+def plotData(Y, figTitle=None, XticksLabelsLst=None, isPercentageOutput=None, doShow=None, chartFnmPath=None, szW=20, szH=10):
+
+        doShow = 1 if doShow is None else doShow     
+        isPercentageOutput=0 if isPercentageOutput is None else isPercentageOutput
+    
+        figTitle = "chart" if figTitle is None else figTitle
+        
+        Y = [ x/sum(Y)*100 for x in Y] if isPercentageOutput else Y
+        Ylabel= 'percentage %' if isPercentageOutput else 'counts'
+
+        X = list(range(len(Y)))
+        Xticks = list(range(len(X)))        
+        XticksLabelsLst = X if XticksLabelsLst is None else XticksLabelsLst   
+        XlabelRotation= 60 if len(X)>50 else 0     
+   
+        plt.clf()
+        plt.gcf().set_size_inches(szW,szH)
+        plt.title(figTitle, fontsize=20)
+        plt.xlabel('values', fontsize=18)
+        plt.ylabel(Ylabel, fontsize=16)
+        plt.rcParams["figure.autolayout"] = True
+        plt.margins(x=0, y=0)
+        plt.xticks(Xticks, fontsize=8, rotation=XlabelRotation, labels=XticksLabelsLst)
+        plt.bar(X,Y)
+        
+        if not chartFnmPath is None:            
+           plt.savefig(chartFnmPath)           
+           saveChartData([X,Y,Xticks,XticksLabelsLst],chartFnmPath)
+
+        if doShow:
+           plt.show()        
+        
+        plt.close()
+
+# plotting a map and data as a color map
+# input is a list of lists: data = [ [dataName,Value],... ]
+# dataName will be mapped to mapName in the map data
+def plotMap(input_data, cfg=None):
+
+    cfg = cfg if not cfg is None else { "shapefile_path": "datasets/usa/map/cb_2018_us_state_20m.shp",
+                                        "xylim": [-130, -60, 20, 55],
+                                        "fontsize": 6,
+                                        "figsize":(15,10),
+                                        "cmap":"magma",
+                                        "outputFnmPath":"results/",
+                                        "doSave":0,
+                                        "doShow":1,
+                                        "mapTitle": "Number of Patients per State",
+                                        "mapName":"NAME",
+                                        "dataName":"state"
+                                    }
+
+
+    # Path to the shapefile (.shp) of USA states    
+    shapefile_path = cfg["shapefile_path"]
+
+    # Load the shapefile using geopandas
+    mapData = gpd.read_file(shapefile_path)
+
+    # names could be: state, city, zipcode, ...
+    data = {
+    "state": [name for name in input_data.keys()],
+    "vals": list(input_data.values())
+    }
+
+    #Convert the data to a pandas DataFrame
+    data_df = pd.DataFrame(data)
+
+    # Merge the data DataFrame with the map DataFrame based on the common state column
+    merged = mapData.set_index(cfg["mapName"]).join(data_df.set_index(cfg["dataName"]))
+
+    # Set up the figure and axis
+    fig, ax = plt.subplots(figsize=cfg["figsize"])
+
+    # Plot the map
+    merged.plot(column="vals", cmap=cfg["cmap"], linewidth=0.8, ax=ax, edgecolor="0.8", legend=True)
+   
+    # Adjust the x-limits of the plot to better fit the map
+    ax.set_xlim(cfg["xylim"][0], cfg["xylim"][1])
+    ax.set_ylim(cfg["xylim"][2], cfg["xylim"][3])
+
+    # Add annotations for each state
+    for idx, row in merged.iterrows():
+        # Get the coordinates for the annotation from the centroid of the geometry
+        x, y = row['geometry'].centroid.x, row['geometry'].centroid.y
+
+        # Get the state abbreviation and number of patients. Replace 'STUSPS' with the correct column for state abbreviations if needed
+        state_abbr = row['STUSPS']
+        vals = row['vals']
+
+        # Create the annotation text
+        annotation_text = f'{state_abbr}'
+
+        # Add the annotation to the plot with a black text color and a white outline
+        ax.annotate(annotation_text, xy=(x, y), ha='center', fontsize=cfg["fontsize"], color='black',
+                     path_effects=[PathEffects.withStroke(linewidth=3, foreground='white')])
+
+
+    # Set the title
+    ax.set_title(cfg["mapTitle"])
+
+    if cfg["doSave"]:
+       plt.savefig(cfg["outputFnmPath"])
+       saveChartData([[name for name in input_data.keys()],list(input_data.values()),None,None],cfg["outputFnmPath"])
+
+    if cfg["doShow"]:      
+       # Show the plot
+       plt.show()    
+    
+        
+def getFreqFromList(data, isPercentageOutput=None):
+
+    isPercentageOutput = isPercentageOutput if not isPercentageOutput is None else 0
+    # get frequency of data 
+    result = []
+    # get unique values 
+    labels = sorted(list(set(data)))
+    freq = []
+    for lbl in labels:     
+        count = len( [y for y in data if y == lbl ] ) 
+        freq.append(count )
+
+    if isPercentageOutput:
+       # get percentage instead of count
+       freq = [ (x/sum(freq)*100) for x in freq]  
+
+    result = [labels, freq]    
+    return result
+
+def plotPatientsCharts(p, dataLabels, dataArray, chartFolderPath, rdSName,statesLabels,  rd_datasset_size, isPercentageOutput):
+
+            statesIDs, statesSName, statesLName =  MDutils.getUSAstateNames()
+            L =  [x[p] for x in dataArray if not x[p] is None ]
+            L =  L if not p in[6,7,8] else [x for x in L if x !=0  ]
+
+            pltTitle =  dataLabels[p] if p<9 else "CP"+str(p-8)
+            chartFnm = "chart_"+rdSName+"_"+str(p)+"_"+pltTitle +"_"+str(rd_datasset_size)+'.png'
+            chartFnmPath = os.path.join(chartFolderPath, chartFnm)
+            print(chartFnmPath)
+            szW = 6 if p in [4,5] else ( 10 if p in [2] else 15)
+            szH = 6
+            Ylabel= 'percentage %' if isPercentageOutput else 'counts'
+
+            plt.clf()
+            plt.gcf().set_size_inches(szW,szH)
+            plt.title(rdSName+" : "+pltTitle, fontsize=20)
+            plt.xlabel('values', fontsize=18)
+            plt.ylabel(Ylabel, fontsize=16)
+            plt.rcParams["figure.autolayout"] = True
+            plt.margins(x=0, y=0)
+            
+            ## Handling different data lists
+            if p <9:    
+                X, Y =  getFreqFromList(L, isPercentageOutput=isPercentageOutput); 
+                Xticks = list(range(len(X)))
+                if p==1: # X is age  list 
+                        plt.xticks(Xticks, fontsize=8, rotation=60, labels=Xticks)
+                elif p==2: # X is states list     
+                    if len(X)!=len(statesLabels):
+                        tmp=[]
+                        for x in enumerate(X):
+                            sn = x[0] #stateLNames.index(x)
+                            tmp.append(statesLabels[sn])
+
+                        statesLabels = tmp
+
+                    plt.xticks(Xticks, fontsize=8, rotation=60, labels=statesLabels)
+                    print("------------------- Create Maps    -------------------------")        
+                    # Initialize an empty dictionary to store the counts of persons per state
+                    state_counts = {state: val for state, val in zip(statesLName,Y)}
+                    chartFnm = "chart_"+rdSName+"_"+str(p)+"_"+pltTitle +"_"+str(rd_datasset_size)+'_map.png'
+                    chartFnmPath = os.path.join(chartFolderPath, chartFnm)
+                    cfg = { "shapefile_path": "datasets/usa/map/cb_2018_us_state_20m.shp",
+                            "xylim": [-130, -60, 20, 55],
+                            "fontsize": 6,
+                            "figsize":(15,10),
+                            "cmap":"magma",
+                            "outputFnmPath": chartFnmPath,
+                            "doSave":1,
+                            "doShow":0,
+                            "mapTitle": pltTitle,
+                            "mapName":"NAME",
+                            "dataName":"state"
+                        }
+                    plotMap(state_counts, cfg)
+                    
+                elif p in [6,7,8]: # X is dates list
+                        plt.xticks(X, fontsize=7, rotation=60, labels=X)
+                
+                plt.bar(X,Y)
+                saveChartData([X,Y,Xticks,statesLabels],chartFnmPath)
+                plt.savefig(chartFnmPath)
+     
+            else: 
+                #clinical parameters
+                stepSize = 0.01
+                X = np.arange((np.min(L)), (np.max(L)), stepSize) if (np.max(L) - np.min(L))  < 100 else np.arange((np.min(L)), (np.max(L)), 1)   
+                n, bins, _ = plt.hist(L, bins=len(X))
+                bin_centers = (bins[:-1] + bins[1:]) / 2
+                saveChartData([bin_centers,n,None,None],chartFnmPath)
+                plt.savefig(chartFnmPath)
+
+def plotDeathCharts(p, dataArray, sexLabels, racelabels, isPercentageOutput, maxUSAAge, rdSName, statesLabels, rd_datasset_size, chartFolderPath, szW,szH):
+      
+        raceNamesLst = racelabels[1]  
+        sexLst       = sexLabels[0]
+
+        ##death per: age, state, sex, race         
+        Y1 = [len([x for x in dataArray if (x[8] not in (None, 0)) and (x[1]==a)])  for a in range(maxUSAAge+1)]
+        Y2 = [len([x for x in dataArray if (x[8] not in (None, 0)) and (x[2]==a)])  for a in MDutils.getUSAstateNames()[2]]       
+        Y3 = [len([x for x in dataArray if (x[8] not in (None, 0)) and (x[4]==a)])  for a in sexLst]
+        Y4 = [len([x for x in dataArray if (x[8] not in (None, 0)) and (x[5]==a)])  for a in raceNamesLst]
+        deathPlots = [Y1,Y2,Y3, Y4]
+        # TODO: move to json config file
+        deathPlotsLabels= ["DeathAge","DeathState","DeathSex","DeathRace"]
+        XticksLabelsLst = [list(range(len(Y1))), MDutils.getUSAstateNames()[1], sexLst, raceNamesLst]
+
+        for Y,pltTitle, XticksLabels in zip(deathPlots, deathPlotsLabels, XticksLabelsLst): 
+            Y = [ x/sum(Y)*100 for x in Y] if isPercentageOutput else Y
+            X = list(range(len(Y)))
+            plt.clf()
+            plt.gcf().set_size_inches(szW,szH)
+            plt.title(rdSName+" : "+pltTitle, fontsize=20)
+            plt.xlabel('values', fontsize=18)
+            Ylabel= 'percentage %' if isPercentageOutput else 'counts'
+            plt.ylabel(Ylabel, fontsize=16)
+            plt.rcParams["figure.autolayout"] = True
+            plt.margins(x=0, y=0)
+            Xticks = list(range(len(X)))        
+            rotation= 60 if len(X)>50 else 0   
+            
+            if (len(X)!=  len(XticksLabels)):
+               XticksLabels=  MDutils.getUSAstateNames()[1]  
+
+            plt.xticks(Xticks, fontsize=8, rotation=rotation, labels=XticksLabels)
+            plt.bar(X,Y)
+            chartFnm = "chart_"+rdSName+"_"+str(p)+"_"+pltTitle +"_"+str(rd_datasset_size)+'.png'
+            chartFnmPath = os.path.join(chartFolderPath, chartFnm)
+            print(chartFnmPath)
+            saveChartData([X,Y,Xticks,XticksLabels],chartFnmPath)
+            plt.savefig(chartFnmPath)
+            p = p + 1
+ 
+def plotRareDiseaseData(fnm, sexLabels, racelabels, isPercentageOutput=None):
+        print("=======================================================================")
+        print("        RD CREATE CHARTS ")
+        print("=======================================================================")
+        startTm = time.time()
+        isPercentageOutput = isPercentageOutput if not isPercentageOutput is None else 0 
+
+        # get disease name and output path from the file name
+        chartFolderPath, csvFnm = os.path.split(fnm) # os.path.dirname(fnm)
+        rdSName =  csvFnm.split("_")[0]
+
+        statesLabels = MDutils.getUSAstateNames()[1]
+
+        #----------------------------------------------
+        print("Reading input CSV files ..............")
+        #----------------------------------------------
+        maxUSAAge, dataLabels, dataArray =  MDutils.readingCSVdata(fnm, 0)
+
+        rd_datasset_size = len(dataArray)
+
+        print("============    Charts   ================")
+        #   0,     1,     2,       3,         4,      5,       6,           7,          8,         9,     10  ]
+        # "idx", "age",	"state", "zipCode",	"sex",	"race",	"birthDate", "diagDate", "deathDate", "CP1",  "CP2"]
+
+        excludedLabels =  ["idx","zipCode"]
+        chartsIdx= [ j  for j in range(len(dataLabels)) if not dataLabels[j] in excludedLabels] 
+
+        # figure size 
+        szW = 10; szH = 6
+        for p in chartsIdx:                    
+            plotPatientsCharts(p, dataLabels, dataArray, chartFolderPath, rdSName,statesLabels,  rd_datasset_size, isPercentageOutput)
+
+        
+        plotDeathCharts(p+1, dataArray, sexLabels, racelabels, isPercentageOutput, maxUSAAge, rdSName, statesLabels, rd_datasset_size, chartFolderPath, szW,szH)
+
+        print("-------------------        Statistics    -------------------------")
+        rdTime =  time.time() - startTm
+        print("Preprocessing time = ",  rdTime , " seconds")  
+        endTm = time.time() - startTm 
+        print("Preprocessing time for plotting = ", endTm, " seconds")
+        print("-------------------  Plotting done! -------------------------")
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+       fnm = sys.argv[1]
+       print("input: ", fnm)
+    
+
+# ffffffffffffffffffffffffffffffffffffffff
+# configUSA.json
+# ffffffffffffffffffffffffffffffffffffffff
+
+
+{ 
+    "rd_datasset_size":{
+      "rd_dataset_size_value":0,
+      "note":"# size of the generated dataset, 0 means gereating all possible patients "
+    }, 
+    "maxAge":{
+      "max-age-value":95,
+      "note":"ref: usaMaxAge  max age 116 https://en.wikipedia.org/wiki/List_of_American_supercentenarians"
+      },
+    "addTime2Date":0,
+    "correctionFactor":{
+      "corr_array":[1, 30, 1],
+      "note":"for each rare disease, some values are conflicted in the literature, the correction factor fix this"
+      },
+    "rdAgeGroupsLst":["<5","5-14","15-19","20-24","25-39","40-60",">60"],      
+    "sexLabels":  [["m","f"],
+                   ["male","female"]
+                  ], 
+    "raceLabels": [["AA","EA","OA"],
+                   ["African-American", "European-American", "Others"]
+                  ],
+    "outputDataLabels": ["idx","age","state","zipCode","sex", "race","birthDate","diagDate", "deathDate"],
+    "age_sex_catigories": ["male","female","total"],
+    "paths":{
+      "rdsPath": ["config", "RDsDataUSA.json"],
+      "usaRaceDataPath": ["datasets", "usa","usa-2020-states-race_ext.csv"],
+      "usaAgeSexDataFilePath":["datasets", "usa","usa-2020-states-age-sex-"],
+      "logFilePath": ["datasets","log.txt"],
+      "resultsFolderPath":["output"]
+    }
+}
+
+# ffffffffffffffffffffffffffffffffffffffff
+# RDsDataUSA.json
+# ffffffffffffffffffffffffffffffffffffffff
+
+{  
+  "RDs":[ 
+    {
+      "RDID": 1,
+      "orphanet_code": 232,      
+      "short_name": "scd",
+      "name": "Sickle Cell Disease",
+      "number_of_patients":  {
+        "nump_value": 100000,
+        "note":"",
+        "refs":["2020, Amanda et al, Trends in sickle cell disease–related mortality in the united states, 1979 to 2017. Annals of Emergency Medicine, 76(3,Supplement):S28–S36, 2020. Sickle Cell Disease in the Emergency Department."]
+      },   
+      "prevalence":{
+        "pr_value":0.00030303030303030303,
+        "note":"1/3300, it will be re-computed based on number of patients and total usa population",
+        "refs":["Editorial Team. Data and statistics on sickle cell disease. https://www.cdc.gov/ncbddd/sicklecell/data.html, accessed 17/1/2023, 2023"]      
+      },
+      "race_percentage":{
+           "races": {
+                "African-American,AA":73.1,
+                "European-American,EA":3.0,
+                "Others,OA":23.9
+          },
+          "refs":["Editorial Team. Data and statistics on sickle cell disease. https://www.cdc.gov/ncbddd/sicklecell/data.html, accessed 17/1/2023, 2023"]            
+      },
+      "diagnosis_dates":{
+          "dg_min_days":150,
+          "dg_max_days":180,
+          "note":"how many days after birth until diagnostic, 5-6 months",
+          "refs":["Editorial Team. Sickle cell disease symptoms. https://www.nhlbi.nih.gov/health/sickle-cell-disease/symptoms, accessed 17/1/2023, 2022."]        
+      },
+      "sex_percentage":{
+        "male": 50.0,
+        "female": 50.0,
+        "note": "NA: No reference available so we used 50%",
+        "refs":[""]     
+      },
+      "death_percentage":{        
+        "rates":{
+          "0-4":   0.00047,
+          "5-14":  0.00030,
+          "15-19": 0.00070,
+          "20-24": 0.00135,
+          "25-39": 0.00275,
+          "40-60": 0.00285,
+          "61-99": 0.00199
+        },
+        "note":"it was per 100000 e.g. 0.47 death per 100000, the values are converted to percentage. y = x/100000*100",
+        "refs":["2020, Amanda et al, Trends in sickle cell disease–related mortality in the united states, 1979 to 2017. Annals of Emergency Medicine, 76(3,Supplement):S28–S36, 2020. Sickle Cell Disease in the Emergency Department."]        
+      },
+      "clinical_parameters": [
+        {
+          "cp_name": "CBC",
+          "cp_unit": "g/dL",
+          "cp_min_value": 6.0,
+          "cp_max_value": 11.0,
+          "refs":["Editorial Team. Blood tests for sickle cell disease. https://sickle-cell.com/blood-test, accessed 17/1/2023, 2020."]            
+        },
+        {
+          "cp_name": "RC",
+          "cp_unit": "%",
+          "cp_min_value": 2.0,
+          "cp_max_value": 3.0,
+          "refs":["Editorial Team. Blood tests for sickle cell disease. https://sickle-cell.com/blood-test, accessed 17/1/2023, 2020."]                      
+        }
+      ]      
+    },
+    {
+      "RDID": 2,
+      "orphanet_code": 586,      
+      "short_name": "cf",
+      "name": "Cystic Fibrosis",
+      "number_of_patients":  {
+        "nump_value": 32100,
+        "note":"",
+        "refs":["Editorial Team. 2021 cystic fibrosis patient-registry-annual-data-report. https://www.cff.org/sites/default/files/2021-11/Patient-Registry-Annual-Data-Report.pdf, accessed 23/1/2023, 2021."]     
+      },   
+      "prevalence":{
+        "pr_value":0.0,
+        "note":"NA, will be computed based on number of patients and total usa population",
+        "refs":["Editorial Team. 2021 cystic fibrosis patient-registry-annual-data-report. https://www.cff.org/sites/default/files/2021-11/Patient-Registry-Annual-Data-Report.pdf, accessed 23/1/2023, 2021."]     
+      },
+      "race_percentage":{
+        "races": {
+            "African-American,AA": 3.5,
+            "European-American,EA": 91.4,
+            "Others,OA": 5.1
+         },
+         "refs":["Editorial Team. 2021 cystic fibrosis patient-registry-annual-data-report. https://www.cff.org/sites/default/files/2021-11/Patient-Registry-Annual-Data-Report.pdf, accessed 23/1/2023, 2021."]            
+      },
+      "diagnosis_dates":{
+          "dg_min_days":2,
+          "dg_max_days":3,
+          "note":"how many days after birth until diagnostic",
+          "refs":[ "Editorial Team. Cystic fibrosis sweat test. https://www.cff.org/intro-cf/sweat-test, accessed 23/1/2023, 2023."]        
+      },
+      "sex_percentage":{
+        "male": 51.7,
+        "female": 48.3,
+        "note": "",
+        "refs":["Editorial Team. 2021 cystic fibrosis patient-registry-annual-data-report. https://www.cff.org/sites/default/files/2021-11/Patient-Registry-Annual-Data-Report.pdf, accessed 23/1/2023, 2021."]     
+      },
+      "death_percentage":{
+        "rates":{
+          "0-4": 0.02873,
+          "5-14": 0.05747,
+          "15-19": 0.18678,
+          "20-24": 0.33045,
+          "25-39": 1.29310,
+          "40-60": 0.87643,
+          "61-99": 0.56034
+        },
+        "note":"the list is estimated from (Age at Death) chart, page 72 in the refernce.  [2.0, 4.0, 13.0, 23.0, 90.0, 61.0, 39.0] per all patientsa, the total death in 2021 was 232. y= x * (1/(232*30)*100, 30 is a correction factor",
+        "refs":["Editorial Team. 2021 cystic fibrosis patient-registry-annual-data-report. https://www.cff.org/sites/default/files/2021-11/Patient-Registry-Annual-Data-Report.pdf, accessed 23/1/2023, 2021."]        
+      },
+      "clinical_parameters": [
+        {
+          "cp_name": "Ch",
+          "cp_unit": "mmol/L",
+          "cp_min_value": 30.0,
+          "cp_max_value": 118.6,
+          "refs":[]            
+      }
+      ]
+    },
+    {
+    "RDID": 3,
+    "orphanet_code": 98896,
+    "short_name": "dmd",
+    "name": "Duchenne Muscular Dystrophy",
+    "number_of_patients":  {
+      "nump_value": 0,
+      "note":"NA: computed based on population and prevalence",
+      "refs":[""]  
+    },   
+    "prevalence":       {
+      "pr_value": 0.00016666666,
+      "note":"1/6000 white male",
+      "refs":["Nader Salari et al. Global prevalence of duchenne and becker musculardystrophy: a systematic review and meta-analysis. J Orthop Surg Res, 17(1):96, February 2022."]  
+    },   
+    "race_percentage":{
+      "races": {
+          "African-American,AA": 29.0,
+          "European-American,EA": 43.0,
+          "Others,OA": 28.0
+        },
+        "refs":["Deborah C Salzberg et al. Differences in race and ethnicity in muscular dystrophy mortality ratesfor males under 40 years of age, 2006-2015. Neuroepidemiology, 50(3-4):201–206, April 2018."]        
+    },
+    "diagnosis_dates":{
+        "dg_min_days":365,
+        "dg_max_days":1095,
+        "note":"how many days after birth until diagnostic, 1-3 years",
+        "refs":["Eun Young Kim et al. Correlation of serum creatine kinase level with pulmonary function in duchenne muscular dystrophy. Ann Rehabil Med, 41(2):306–312, April 2017."]     
+    },
+    "sex_percentage":{
+      "male": 99.998,
+      "female": 0.002,
+      "note": "male 1/3500-1/6000, women 1/50000000",
+      "refs":["Nader Salari et al. Global prevalence of duchenne and becker muscular dystrophy: a systematic review and meta-analysis. J Orthop Surg Res, 17(1):96, February 2022."]     
+    },
+    "death_percentage": {
+      "rates":{
+          "0-4":   0.2,
+          "5-14":  0.2,
+          "15-19": 0.2,
+          "20-24": 59.5,
+          "25-39": 26.1,
+          "40-60": 86.7,
+          "61-99": 99.99
+        },
+        "note":"[0.998, 0.998,   0.998,  0.595,   0.261 ,  0.133,  0.001] survival rate. y=(1.0- x)*100. The patents do not live until old age",
+        "refs":["Jonathan Broomfield et al. Life expectancy in duchenne muscular dystrophy. Neurology, 97(23):e2304–e2314, 2021."]        
+    },
+    "clinical_parameters": [
+      {
+        "cp_name": "CK",
+        "cp_unit": "unit/L",
+        "cp_min_value": 350,
+        "cp_max_value": 23200,
+        "refs":["Eun Young Kim et al. Correlation of serum creatine kinase level with pulmonary function in duchenne muscular dystrophy. Ann Rehabil Med, 41(2):306–312, April 2017."]            
+      }
+    ]
+    }
+  ]
+}
+
+# ffffffffffffffffffffffffffffffffffffffff
+# 
+# ffffffffffffffffffffffffffffffffffffffff

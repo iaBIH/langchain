@@ -1,0 +1,250 @@
+============================
+k-anonymity:
+============================
+k-anonymity is a property possessed by certain anonymized data. 
+The term k-anonymity was first introduced by Pierangela Samarati and Latanya Sweeney in a paper 
+published in 1998, although the concept dates to a 1986 paper by Tore Dalenius.
+
+k-anonymity is an attempt to solve the problem "Given person-specific field-structured data, 
+produce a release of the data with scientific guarantees that the individuals who are the 
+subjects of the data cannot be re-identified while the data remain practically useful.
+"[3][4][5] A release of data is said to have the k-anonymity property if the information 
+for each person contained in the release cannot be distinguished from at least 
+k - 1 individuals whose information also appear in the release. Unfortunately, 
+the guarantees provided by k-anonymity are aspirational, not mathematical.
+
+Methods for k-anonymization
+To use k-anonymity to process a dataset so that it can be released with privacy protection,
+ a data scientist must first examine the dataset and decide whether each attribute (column) 
+ is an identifier (identifying), a non-identifier (not-identifying), or a quasi-identifier 
+ (somewhat identifying). Identifiers such as names are suppressed, non-identifying values 
+ are allowed to remain, and the quasi-identifiers need to be processed so that every distinct 
+ combination of quasi-identifiers designates at least k records.
+
+In the example table below presents a fictional nonanonymized database consisting 
+of the patient records for a fictitious hospital. The Name column is an identifier, 
+Age, Gender, State of domicile, and Religion are quasi-identifiers, and Disease is 
+a non-identifying sensitive value. But what about Height and Weight? Are they also 
+non-identifying sensitive values, or are they quasi-identifiers?
+
+Patients treated in the study on April 30
+Name	Age	Gender	Height	Weight	State of domicile	Religion	Disease
+Ramsha	30	Female	165 cm	72 kg	Tamil Nadu	Hindu	Cancer
+Yadu	24	Female	162 cm	70 kg	Kerala	Hindu	Viral infection
+Salima	28	Female	170 cm	68 kg	Tamil Nadu	Muslim	Tuberculosis
+Sunny	27	Male	170 cm	75 kg	Karnataka	Parsi	No illness
+Joan	24	Female	165 cm	71 kg	Kerala	Christian	Heart-related
+Bahuksana	23	Male	160 cm	69 kg	Karnataka	Buddhist	Tuberculosis
+Rambha	19	Male	167 cm	85 kg	Kerala	Hindu	Cancer
+Kishor	29	Male	180 cm	81 kg	Karnataka	Hindu	Heart-related
+Johnson	17	Male	175 cm	79 kg	Kerala	Christian	Heart-related
+John	19	Male	169 cm	82 kg	Kerala	Christian	Viral infection
+There are 6 attributes and 10 records in this data. There are two common methods for 
+achieving k-anonymity for some value of k:
+
+Suppression. In this method, certain values of the attributes are replaced by an asterisk "*". 
+All or some values of a column may be replaced by "*". In the anonymized table below, 
+we have replaced all the values in the Name attribute and all the values in the Religion attribute with a "*".
+Generalization. In this method, individual values of attributes are replaced with a broader category.
+ For example, the value "19" of the attribute 
+ Age may be replaced by "≤ 20", the value "23" by "20 < Age ≤ 30", etc.
+The next table shows the anonymized database.
+
+Patients treated in the study on April 30
+Name	Age	Gender	Height	Weight	State of domicile	Religion	Disease
+*	20 < Age ≤ 30	Female	165 cm	72 kg	Tamil Nadu	*	Cancer
+*	20 < Age ≤ 30	Female	162 cm	70 kg	Kerala	*	Viral infection
+*	20 < Age ≤ 30	Female	170 cm	68 kg	Tamil Nadu	*	Tuberculosis
+*	20 < Age ≤ 30	Male	170 cm	75 kg	Karnataka	*	No illness
+*	20 < Age ≤ 30	Female	165 cm	71 kg	Kerala	*	Heart-related
+*	20 < Age ≤ 30	Male	160 cm	69 kg	Karnataka	*	Tuberculosis
+*	Age ≤ 20	Male	167 cm	85 kg	Kerala	*	Cancer
+*	20 < Age ≤ 30	Male	180 cm	81 kg	Karnataka	*	Heart-related
+*	Age ≤ 20	Male	175 cm	79 kg	Kerala	*	Heart-related
+*	Age ≤ 20	Male	169 cm	82 kg	Kerala	*	Viral infection
+This data has 2-anonymity with respect to the attributes Age, Gender and State of domicile, 
+since for any combination of these attributes found in any row of the table there are always
+ at least 2 rows with those exact attributes. The attributes available to an adversary
+  are called quasi-identifiers. Each quasi-identifier tuple occurs in at least k records
+   for a dataset with k-anonymity.[6]
+
+Critiques of k-anonymity
+This examples demonstrates a failing with k-anonymity: there may exist other data records
+ that can be linked on the variables that are allegedly non-identifying. For example,
+  if an attacker is able to obtain the a log from the person who was taking vital signs as 
+  part of the study and learns that Kishor was at the hospital on April 30 and is 180 cm tall, 
+  this information can be used to link with the "anonymized" database (which may have been 
+  published on the Internet) and learn that Kishor has a heart-related disease. An attacker 
+  who knows that Kishor visited the hospital on April 30 may be able to infer this simply
+   knowing that Kishor is 180 cm height, roughly 80–82 kg, and comes from Karnataka.
+
+The root of this problem is the core problem with k-anonymity: there is no way to mathematically,
+ unambiguously determine whether an attribute is an identifier, a quasi-identifier, or a non-identifying
+  sensitive value. In fact, all values are potentially identifying, depending on their prevalence
+   in the population and on auxiliary data that the attacker may have. Other privacy mechanisms 
+   such as differential privacy do not share this problem.
+
+Meyerson and Williams (2004) demonstrated that optimal k-anonymity is an NP-hard problem, 
+however heuristic methods such as k-Optimize as given by Bayardo and Agrawal (2005) often 
+yield effective results.[7][8] A practical approximation algorithm that enables solving the
+ k-anonymization problem with an approximation guarantee of 
+�
+(
+log
+⁡
+�
+)
+O(\log k) was presented by Kenig and Tassa.[9]
+
+Attacks
+While k-anonymity is a relatively simple-to-implement approach for de-identifying 
+a dataset prior to public release, it is susceptible to many attacks. When background
+ knowledge is available to an attacker, such attacks become even more effective. Such attacks include:
+
+Homogeneity Attack: This attack leverages the case where all the values for a sensitive
+ value within a set of k records are identical. In such cases, even though the data has
+  been k-anonymized, the sensitive value for the set of k records may be exactly predicted.
+Background Knowledge Attack: This attack leverages an association between one or more 
+quasi-identifier attributes with the sensitive attribute to reduce the set of possible 
+values for the sensitive attribute. For example, Machanavajjhala, Kifer, Gehrke, and 
+Venkitasubramaniam (2007) showed that knowing that heart attacks occur at a reduced
+ rate in Japanese patients could be used to narrow the range of values for 
+ a sensitive attribute of a patient's disease.
+Downcoding Attack: This attack, introduced in 2022 by Aloni Cohen, takes advantage of 
+the way that anonymity algorithms aggregate attributes in separate records. 
+Because the aggregation is deterministic, it is possible to reverse-engineer 
+the original data image, and in many cases reveal the original data that was 
+to be protected. This attack does not require background knowledge, but is 
+strengthened by it.[10]
+
+Because k-anonymization does not include any randomization, attackers
+ can make reliable, unambiguous inferences about data sets that may harm 
+ individuals. For example, if the 19-year-old John from Kerala is known 
+ to be in the database above, then it can be reliably said that he has
+  either cancer, a heart-related disease, or a viral infection.
+
+K-anonymization is not a good method to anonymize high-dimensional datasets.[11]
+
+It has also been shown that k-anonymity can skew the results of a data set
+ if it disproportionately suppresses and generalizes data points with
+  unrepresentative characteristics.[12] The suppression and generalization algorithms
+   used to k-anonymize datasets can be altered, however, so that they do not have such
+    a skewing effect.[13]
+
+============================
+     t-closeness:
+============================
+t-closeness is a further refinement of l-diversity group based anonymization that is
+ used to preserve privacy in data sets by reducing the granularity of a data representation. 
+ This reduction is a trade off that results in some loss of effectiveness of data management or 
+ data mining algorithms in order to gain some privacy. The t-closeness model extends the
+  l-diversity model by treating the values of an attribute distinctly by taking into 
+  account the distribution of data values for that attribute.
+
+Formal definition
+Given the existence of data breaches where sensitive attributes may be inferred based 
+upon the distribution of values for l-diverse data, the t-closeness method was created
+ to further l-diversity by additionally maintaining the distribution of sensitive fields. 
+ The original paper[1] by Ninghui Li, Tiancheng Li, and Suresh Venkatasubramanian defines
+  t-closeness as:
+
+The t-closeness Principle: An equivalence class is said to have t-closeness if the distance
+ between the distribution of a sensitive attribute in this class and the distribution of
+  the attribute in the whole table is no more than a threshold t. A table is said to 
+  have t-closeness if all equivalence classes have t-closeness.
+
+Charu Aggarwal and Philip S. Yu further state in their book on privacy-preserving data mining[2] 
+that with this definition, threshold t gives an upper bound on the difference between the 
+distribution of the sensitive attribute values within an anonymized group as compared to
+ the global distribution of values. They also state that for numeric attributes, using 
+ t-closeness anonymization is more effective than many other privacy-preserving data mining methods.
+
+Data breaches and l-diversity
+In real data sets attribute values may be skewed or semantically similar. However, accounting 
+for value distributions may cause difficulty in creating feasible l-diverse representations.
+ The l-diversity technique is useful in that it may hinder an attacker leveraging the global
+  distribution of an attribute's data values in order to infer information about sensitive data values.
+   Not every value may exhibit equal sensitivity, for example, a rare positive indicator for
+    a disease may provide more information than a common negative indicator. Because of 
+    examples like this, l-diversity may be difficult and unnecessary to achieve when 
+    protecting against attribute disclosure. Alternatively, sensitive information
+     leaks may occur because while l-diversity requirement ensures “diversity” of 
+     sensitive values in each group, it does not recognize that values may be 
+     semantically close, for example, an attacker could deduce a stomach 
+     disease applies to an individual if a sample containing the individual
+      only listed three different stomach diseases.
+
+============================
+l-diversity: 
+============================
+l-diversity, also written as ℓ-diversity, is a form of group based anonymization that is
+ used to preserve privacy in data sets by reducing the granularity of a data representation.
+ This reduction is a trade off that results in some loss of effectiveness of data management or 
+ mining algorithms in order to gain some privacy. 
+ The l-diversity model is an extension of the k-anonymity model which reduces
+  the granularity of data representation using techniques including generalization 
+  and suppression such that any given record maps onto at least k-1 other records 
+  in the data. The l-diversity model handles some of the weaknesses in the k-anonymity
+   model where protected identities to the level of k-individuals is not equivalent
+    to protecting the corresponding sensitive values that were generalized or
+     suppressed, especially when the sensitive values within a group exhibit
+      homogeneity. The l-diversity model adds the promotion of intra-group
+       diversity for sensitive values in the anonymization mechanism.
+
+Attacks on k-anonymity
+See also: k-anonymity § Possible attacks
+While k-anonymity is a promising approach to take for group based 
+anonymization given its simplicity and wide array of algorithms that 
+perform it, it is however susceptible to many attacks. When background 
+knowledge is available to an attacker, such attacks become even more 
+effective. Such attacks include:
+
+Homogeneity Attack: This attack leverages the case where all 
+the values for a sensitive value within a set of k records are identical. 
+In such cases, even though the data has been k-anonymized, the sensitive 
+value for the set of k records may be exactly predicted.
+Background Knowledge Attack: This attack leverages an association
+ between one or more quasi-identifier attributes with 
+ the sensitive attribute to reduce the set of possible
+  values for the sensitive attribute. For example,
+   Machanavajjhala, Kifer, Gehrke, and Venkitasubramaniam (2007) 
+   showed that knowing that heart attacks occur at a reduced
+    rate in Japanese patients could be used to narrow the
+     range of values for a sensitive attribute of a
+      patient's disease.
+Formal definition
+Given the existence of such attacks where sensitive 
+attributes may be inferred for k-anonymity data, the
+ l-diversity method was created to further k-anonymity
+ by additionally maintaining the diversity of sensitive fields.
+  The book Privacy-Preserving Data Mining – Models and Algorithms
+   (2008)[1] defines l-diversity as being:
+
+Let a q*-block be a set of tuples such that its non-sensitive 
+values generalize to q*. A q*-block is l-diverse if it contains
+ l "well represented" values for the sensitive attribute S. 
+ A table is l-diverse, if every q*-block in it is l-diverse.
+
+The paper t-Closeness: Privacy beyond k-anonymity and
+ l-diversity (2007)[2] defines l-diversity as being:
+
+The l-diversity Principle – An equivalence class is
+ said to have l-diversity if there are at least l “well-represented” 
+ values for the sensitive attribute. A table is said to have l-diversity 
+ if every equivalence class of the table has l-diversity.
+
+Machanavajjhala et al. (2007)[3] define “well-represented” 
+in three possible ways:
+
+Distinct l-diversity – The simplest definition ensures that at
+ least l distinct values for the sensitive field in each equivalence class exist.
+Entropy l-diversity – The most complex definition defines Entropy of
+ an equivalent class E to be the negation of summation of s across the 
+ domain of the sensitive attribute of p(E,s)log(p(E,s)) where p(E,s) is
+  the fraction of records in E that have the sensitive value s. A table 
+  has entropy l-diversity when for every equivalent class E, Entropy(E) ≥ log(l).
+Recursive (c-l)-diversity – A compromise definition that ensures the most 
+common value does not appear too often while less common values are ensured 
+to not appear too infrequently.
+Aggarwal and Yu (2008) note that when there is more than one sensitive field the 
+l-diversity problem becomes more difficult due to added dimensionalities.
