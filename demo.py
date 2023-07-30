@@ -1,12 +1,14 @@
 # source: 
 # https://github.com/gkamradt/langchain-tutorials/blob/main/LangChain%20Cookbook%20Part%202%20-%20Use%20Cases.ipynb
-
-# pip install langchain openai  tiktoken faiss-cpu faiss-gpu
+# https://github.com/langchain-ai/langchain/blob/490ad93b3cf7d24b30f8993f860b654ff107e638/docs/extras/integrations/toolkits/pandas.ipynb#L8
+# pip install langchain openai  tiktoken faiss-cpu faiss-gpu tabulate
 #
 
 from dotenv import load_dotenv
 import os
-from langchain.llms import OpenAI
+import pandas as pd
+
+from langchain.llms import OpenAI 
 from langchain import PromptTemplate
 from langchain.chains.summarize import load_summarize_chain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -27,8 +29,10 @@ from langchain.chat_models import ChatOpenAI
 from langchain.output_parsers import StructuredOutputParser, ResponseSchema
 # Text splitters
 from langchain.text_splitter import CharacterTextSplitter
+from langchain.agents import create_pandas_dataframe_agent
+from langchain.agents.agent_types import AgentType
 
-api_key = 'sk-WSuG7765S229TgkKXauWKRT3BlbkFJN5mKVJ11See8rqERuI577L'
+api_key = ''
 
 #************************* 1. Summarization 
 def example_1_1():
@@ -259,7 +263,35 @@ def example_6_1():
 
 #************************* 10. FIN
 
+#************************* 11. Generalization of attribute values 
 
+def example_11_1():
+    print("=========== Extraction: Generalization of attribute values ==================")
+    dataPath = "data/adult500.csv"
+    df = pd.read_csv(dataPath)
+    agent = create_pandas_dataframe_agent(OpenAI(temperature=0, openai_api_key=api_key), df, verbose=True)
+    agent = create_pandas_dataframe_agent(
+        ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0613", openai_api_key=api_key),
+        df,
+        verbose=True,
+        agent_type=AgentType.OPENAI_FUNCTIONS,
+    )
+    print("------------------------")
+    agent.run("how many rows are there?")
+    # print("------------------------")
+    # agent.run("whats the square root of the average age?")
+    print("------------------------")
+    agent.run("What are the unique values of workclass attribute?")
+    print("------------------------")
+    agent.run("Suggest 3 levels of generalizations for the values of workclass\
+               attribute that can be used for k-anonymity?\
+               format the output as json")
+    print("------------------------")
+
+    # df1 = df.copy()
+    # df1["Age"] = df1["Age"].fillna(df1["Age"].mean())
+    # agent = create_pandas_dataframe_agent(OpenAI(temperature=0), [df, df1], verbose=True)
+    # agent.run("how many rows in the age column are different?")
 
 print("xxxxxxxxxxxxxxxx LangChain Demo xxxxxxxxxxxxxxxx")
 
@@ -269,4 +301,5 @@ print("xxxxxxxxxxxxxxxx LangChain Demo xxxxxxxxxxxxxxxx")
 #example_2_1()
 #example_3_1()
 #example_3_2()
-example_6_1()
+#example_6_1()
+example_11_1()
