@@ -28,7 +28,7 @@ from langchain.output_parsers import StructuredOutputParser, ResponseSchema
 # Text splitters
 from langchain.text_splitter import CharacterTextSplitter
 
-api_key = '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'
+api_key = 'sk-WSuG7765S229TgkKXauWKRT3BlbkFJN5mKVJ11See8rqERuI577L'
 
 #************************* 1. Summarization 
 def example_1_1():
