@@ -1,11 +1,12 @@
 # source: 
 # https://github.com/gkamradt/langchain-tutorials/blob/main/LangChain%20Cookbook%20Part%202%20-%20Use%20Cases.ipynb
 # https://github.com/langchain-ai/langchain/blob/490ad93b3cf7d24b30f8993f860b654ff107e638/docs/extras/integrations/toolkits/pandas.ipynb#L8
-# pip install langchain openai  tiktoken faiss-cpu faiss-gpu tabulate
-#
+# pip install langchain openai  tiktoken faiss-cpu faiss-gpu tabulate dotenv
+# In windows use: "C:\Users\<user>\AppData\Local\Programs\Python\Python311\python.exe" -m pip install   pandas   --proxy http://proxy.charite.de:8080
+
 
 from dotenv import load_dotenv
-import os
+import os, json
 import pandas as pd
 
 from langchain.llms import OpenAI 
@@ -32,7 +33,19 @@ from langchain.text_splitter import CharacterTextSplitter
 from langchain.agents import create_pandas_dataframe_agent
 from langchain.agents.agent_types import AgentType
 
-api_key = ''
+with open('../config.txt', 'r', encoding='utf-8') as file:
+        # Step 2: Reading the file
+        file_content = file.read()
+api_key =""
+proxy   =""
+for x in file_content.splitlines():
+    if x.startswith("OPENAI_API_KEY"):
+       api_key = x.split(" = ")[1].strip()
+    if x.startswith("proxy"):
+       proxy = x.split(" = ")[1].strip()
+       
+print(api_key)
+print(proxy)
 
 #************************* 1. Summarization 
 def example_1_1():
@@ -220,11 +233,16 @@ def example_3_2():
 
 #************************* 6. Code understanding 
 def example_6_1():
+    # TODO: fix window proxy bug with tiktoken 
     print("=========== Extraction: Using LangChain's Response Schema ==================")
-    llm = ChatOpenAI(model_name='gpt-3.5-turbo', openai_api_key=api_key)
-    embeddings = OpenAIEmbeddings(disallowed_special=(), openai_api_key=api_key)    
+    # import tiktoken
+    # tiktoken.encoding_for_model('gpt-3.5-turbo')
+    
+    llm = ChatOpenAI(model_name='gpt-3.5-turbo', openai_proxy=proxy, openai_api_key=api_key)
+    embeddings = OpenAIEmbeddings(disallowed_special=(), openai_proxy=proxy, openai_api_key=api_key)    
     #loader = TextLoader('sampleText2.txt')
-    root_dir = 'synth-md'
+    #root_dir = 'synth-md'
+    root_dir = "../arxPipline/privacy-mgmt-anonymization"
     docs = []
     # Go through each folder
     counter = 0
@@ -247,10 +265,11 @@ def example_6_1():
     print (docs[0].page_content[:300])
     print("------------  Code Analysis ------------------")
     docsearch = FAISS.from_documents(docs, embeddings)
-    # Get our retriever ready
+    print("Get our retriever ready ..." )
     qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=docsearch.as_retriever())
     
-    query = "Convert synth-md python package to maven java package"
+    # query = "Convert synth-md python package to maven java package"
+    query = "can the json files be improved?"
     output = qa.run(query)
     print(output)
 
@@ -269,23 +288,31 @@ def example_11_1():
     print("=========== Extraction: Generalization of attribute values ==================")
     dataPath = "data/adult500.csv"
     df = pd.read_csv(dataPath)
-    agent = create_pandas_dataframe_agent(OpenAI(temperature=0, openai_api_key=api_key), df, verbose=True)
-    agent = create_pandas_dataframe_agent(
-        ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0613", openai_api_key=api_key),
-        df,
-        verbose=True,
-        agent_type=AgentType.OPENAI_FUNCTIONS,
-    )
+    
+    # opn = OpenAI(temperature=0, openai_api_key=api_key)
+    # agent = create_pandas_dataframe_agent(opn, df, verbose=True)
+
+    cht = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0613",openai_proxy=proxy,  openai_api_key=api_key)
+
+    #cht.proxy = "http://proxy.charite.de:8080"
+    agent = create_pandas_dataframe_agent(cht, df, verbose=False, gent_type=AgentType.OPENAI_FUNCTIONS,)
+    
     print("------------------------")
-    agent.run("how many rows are there?")
+    q1 = "how many rows are there?"
+    a1 = agent.run(q1)
+    print(a1, q1)
+    # # print("------------------------")
+    # # agent.run("whats the square root of the average age?")
     # print("------------------------")
-    # agent.run("whats the square root of the average age?")
+    q2 = "What are the unique values of workclass attribute?"
+    a2 = agent.run(q2)
+    print(q2,a2)
     print("------------------------")
-    agent.run("What are the unique values of workclass attribute?")
-    print("------------------------")
-    agent.run("Suggest 3 levels of generalizations for the values of workclass\
+    q3 = "Suggest 3 levels of generalizations for the values of workclass\
                attribute that can be used for k-anonymity?\
-               format the output as json")
+               format the output as json"
+    a3 = agent.run(q3)
+    print(q3,a3)
     print("------------------------")
 
     # df1 = df.copy()
